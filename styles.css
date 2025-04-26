@@ -1,24 +1,365 @@
-/* Study Analytics Plugin Styles */
-
-.study-analytics-container {
-  padding: 20px;
+/* Main Container Styles */
+.study-flow-container {
+    padding: 1rem;
+    max-width: 800px;
+    margin: 0 auto;
 }
 
-.study-analytics-header {
-  margin-bottom: 20px;
-  font-weight: bold;
-  font-size: 1.5em;
+/* Timer Section */
+.study-flow-timer-section {
+    text-align: center;
+    margin-bottom: 2rem;
+    padding: 1.5rem;
+    background: var(--background-secondary);
+    border-radius: 8px;
 }
 
-.study-analytics-chart {
-  margin: 20px 0;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 5px;
-  padding: 15px;
+.study-flow-timer {
+    font-size: 3.5rem;
+    font-weight: bold;
+    font-family: monospace;
+    color: var(--text-normal);
+    margin-bottom: 1rem;
 }
 
-.study-analytics-summary {
-  margin-top: 20px;
-  color: var(--text-muted);
-  font-size: 0.9em;
+.timer-controls {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: center;
+}
+
+.timer-control-btn {
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.timer-control-btn:hover {
+    background: var(--interactive-accent-hover);
+}
+
+/* Session Section */
+.session-section {
+    margin-bottom: 2rem;
+    padding: 1rem;
+    background: var(--background-primary-alt);
+    border-radius: 8px;
+}
+
+.session-status {
+    font-size: 1.1rem;
+    margin-bottom: 1rem;
+    text-align: center;
+    color: var(--text-muted);
+}
+
+.session-controls {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+}
+
+.session-control-btn {
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    background: var(--interactive-normal);
+    color: var(--text-normal);
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.session-control-btn:hover {
+    background: var(--interactive-hover);
+}
+
+.session-control-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Study Flow View */
+.timer-display {
+    font-size: 3em;
+    text-align: center;
+    margin: 20px;
+    font-family: monospace;
+}
+
+.end-time-display {
+    text-align: center;
+    margin-top: -15px;
+    margin-bottom: 20px;
+    font-size: 0.9em;
+    color: var(--text-muted);
+}
+
+.stopwatch-section {
+    text-align: center;
+    margin: 10px 0;
+}
+
+.stopwatch-toggle {
+    padding: 5px 15px;
+    margin: 5px;
+}
+
+.controls {
+    text-align: center;
+    margin: 20px;
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+}
+
+.control-button {
+    padding: 5px 15px;
+    min-width: 80px;
+}
+
+.end-button {
+    background-color: #ff4444;
+    color: white;
+}
+
+.category-section, .difficulty-section, 
+.reflection-section, .distraction-section, .notes-section {
+    margin: 20px;
+}
+
+.notes-area, .distraction-input {
+    width: 100%;
+    margin-top: 10px;
+}
+
+.difficulty-slider {
+    width: 200px;
+}
+
+.reflection-button, .distraction-button {
+    width: 100%;
+    margin-top: 10px;
+    padding: 5px;
+}
+
+.study-flow-daily-stats {
+    background: var(--background-secondary);
+    padding: 10px;
+    border-radius: 5px;
+    margin: 10px 20px;
+    text-align: center;
+}
+
+.study-flow-daily-time {
+    font-size: 1.2em;
+    font-weight: bold;
+    color: var(--text-accent);
+}
+
+/* Quick Actions */
+.quick-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.quick-action-btn {
+    padding: 0.75rem;
+    border-radius: 4px;
+    background: var(--background-modifier-border);
+    color: var(--text-normal);
+    border: none;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.quick-action-btn:hover {
+    background: var(--background-modifier-hover);
+    transform: translateY(-1px);
+}
+
+/* Modal Styles */
+.study-flow-modal {
+    padding: 1.5rem;
+}
+
+.modal-input-container {
+    margin-bottom: 1rem;
+}
+
+.modal-input-container label {
+    display: block;
+    margin-bottom: 0.5rem;
+    color: var(--text-muted);
+}
+
+.modal-input {
+    width: 100%;
+    padding: 0.5rem;
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-primary);
+    color: var(--text-normal);
+}
+
+textarea.modal-input {
+    min-height: 100px;
+    resize: vertical;
+}
+
+.modal-button-container {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 1rem;
+}
+
+.modal-button {
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.modal-button:first-child {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+.modal-button:last-child {
+    background: var(--background-modifier-border);
+    color: var(--text-normal);
+}
+
+/* Tags Container */
+.tags-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+}
+
+.tag {
+    padding: 0.25rem 0.75rem;
+    border-radius: 15px;
+    background: var(--background-modifier-border);
+    color: var(--text-normal);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.tag[data-selected="true"] {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+/* Statistics View */
+.study-stats-container {
+    padding: 1rem;
+}
+
+.stats-section {
+    margin-bottom: 2rem;
+    padding: 1rem;
+    background: var(--background-secondary);
+    border-radius: 8px;
+}
+
+.stats-section h3 {
+    margin-top: 0;
+    margin-bottom: 1rem;
+    color: var(--text-normal);
+}
+
+.stats-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.stats-table td {
+    padding: 0.5rem;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.stats-table td:first-child {
+    color: var(--text-muted);
+}
+
+.stats-table td:last-child {
+    text-align: right;
+}
+
+/* Charts */
+.weekly-chart,
+.category-chart {
+    width: 100%;
+    height: 200px;
+    margin-top: 1rem;
+}
+
+/* Responsive Design */
+@media (max-width: 600px) {
+    .study-flow-timer {
+        font-size: 2.5rem;
+    }
+
+    .timer-controls,
+    .session-controls {
+        flex-direction: column;
+    }
+
+    .quick-actions {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Animations */
+@keyframes pulse {
+    0% {
+        transform: scale(1);
+    }
+
+    50% {
+        transform: scale(1.05);
+    }
+
+    100% {
+        transform: scale(1);
+    }
+}
+
+.timer-running .study-flow-timer {
+    animation: pulse 2s infinite;
+}
+
+/* Focus Mode */
+.focus-mode .quick-actions, 
+.focus-mode .session-controls {
+    opacity: 0.5;
+    transition: opacity 0.3s;
+}
+
+.focus-mode .quick-actions:hover,
+.focus-mode .session-controls:hover {
+    opacity: 1;
+}
+
+/* Dark Theme Adjustments */
+.theme-dark .study-flow-timer {
+    text-shadow: 0 0 10px rgba(255, 255, 255, 0.1);
+}
+
+/* Light Theme Adjustments */
+.theme-light .study-flow-timer {
+    text-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
 }

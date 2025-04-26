@@ -3,7 +3,7 @@
   "name": "Study Analytics",
   "version": "1.0.0",
   "minAppVersion": "1.4.0",
-  "description": "Helps users analyze their study habits and notes.",
+  "description": "A plugin for managing study sessions with Pomodoro timer, tracking study habits, and creating detailed study reports.",
   "author": "rpj-07",
   "authorUrl": "https://github.com/rpj-07",
   "isDesktopOnly": false
