@@ -1,0 +1,24 @@
+/* Study Analytics Plugin Styles */
+
+.study-analytics-container {
+  padding: 20px;
+}
+
+.study-analytics-header {
+  margin-bottom: 20px;
+  font-weight: bold;
+  font-size: 1.5em;
+}
+
+.study-analytics-chart {
+  margin: 20px 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 5px;
+  padding: 15px;
+}
+
+.study-analytics-summary {
+  margin-top: 20px;
+  color: var(--text-muted);
+  font-size: 0.9em;
+}

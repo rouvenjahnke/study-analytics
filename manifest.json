@@ -1,0 +1,10 @@
+{
+  "id": "study-analytics",
+  "name": "Study Analytics",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Helps users analyze their study habits and notes.",
+  "author": "Your Name",
+  "authorUrl": "https://github.com/yourusername",
+  "isDesktopOnly": false
+}
