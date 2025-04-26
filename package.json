@@ -1,0 +1,24 @@
+{
+  "name": "study-analytics",
+  "version": "1.0.0",
+  "description": "An Obsidian plugin to help users analyze their study habits and notes.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "version": "node version-bump.mjs && git add manifest.json versions.json"
+  },
+  "keywords": ["obsidian", "plugin", "study", "analytics"],
+  "author": "Your Name",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^16.11.6",
+    "@typescript-eslint/eslint-plugin": "^5.56.0",
+    "@typescript-eslint/parser": "^5.56.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.18.0",
+    "obsidian": "^1.4.0",
+    "tslib": "2.4.0",
+    "typescript": "4.7.4"
+  }
+}
