@@ -1,7 +1,7 @@
 {
   "id": "study-analytics",
   "name": "Study Analytics",
-  "version": "1.0.4-beta",
+  "version": "1.0.0",
   "minAppVersion": "1.4.0",
   "description": "A plugin for managing study sessions with Pomodoro timer, tracking study habits, and creating detailed study reports.",
   "author": "rpj-07",
