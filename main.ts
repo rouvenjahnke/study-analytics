@@ -15,6 +15,12 @@ interface StudyAnalyticsSettings {
     autoStartPomodoros: boolean;
     showDifficulty: boolean;
     trackModifiedFiles: boolean;
+    enableWeeklySummary: boolean;
+    weeklySummaryDay: number; // 0-6 (Sunday-Saturday)
+    createDailySummary: boolean;
+    trackOpenedFiles: boolean;
+    trackWordCount: boolean;
+    lastWeeklySummary?: string; // Last date when weekly summary was created
 }
 
 const DEFAULT_SETTINGS: StudyAnalyticsSettings = {
@@ -29,7 +35,12 @@ const DEFAULT_SETTINGS: StudyAnalyticsSettings = {
     autoStartBreaks: true,
     autoStartPomodoros: false,
     showDifficulty: true,
-    trackModifiedFiles: true
+    trackModifiedFiles: true,
+    enableWeeklySummary: true,
+    weeklySummaryDay: 0, // Sunday by default
+    createDailySummary: true,
+    trackOpenedFiles: true,
+    trackWordCount: true
 };
 
 interface DistractionNote {
@@ -66,12 +77,14 @@ interface SessionData {
     distractions: DistractionNote[];
     lineNotes: LineNote[];
     modifiedFiles: string[];
+    openedFiles: string[];
     completedTasks: CompletedTask[];
     reflections: ReflectionNote[];
     date: string;
     completed: boolean;
     isBreak: boolean;
     pauseDuration: number;
+    wordCount: number;
 }
 
 class StudySession {
@@ -84,12 +97,15 @@ class StudySession {
     distractions: DistractionNote[];
     lineNotes: LineNote[];
     modifiedFiles: Set<string>;
+    openedFiles: Set<string>;
     completed: boolean;
     completedTasks: CompletedTask[];
     reflections: ReflectionNote[];
     pauseStartTime: Date | null;
     totalPauseDuration: number;
     isBreak: boolean;
+    wordCount: number;
+    initialWordCounts: Map<string, number>;
 
     constructor(category: string) {
         this.category = category;
@@ -101,12 +117,15 @@ class StudySession {
         this.distractions = [];
         this.lineNotes = [];
         this.modifiedFiles = new Set<string>();
+        this.openedFiles = new Set<string>();
         this.completed = false;
         this.completedTasks = [];
         this.reflections = [];
         this.pauseStartTime = null;
         this.totalPauseDuration = 0;
         this.isBreak = category === 'Break';
+        this.wordCount = 0;
+        this.initialWordCounts = new Map<string, number>();
     }
 
     pause(): void {
@@ -157,6 +176,23 @@ class StudySession {
     trackModifiedFile(file: string): void {
         this.modifiedFiles.add(file);
     }
+    
+    trackOpenedFile(file: string): void {
+        this.openedFiles.add(file);
+    }
+    
+    updateWordCount(filePath: string, currentWordCount: number): void {
+        if (!this.initialWordCounts.has(filePath)) {
+            this.initialWordCounts.set(filePath, currentWordCount);
+            return;
+        }
+        
+        const initialCount = this.initialWordCounts.get(filePath) || 0;
+        if (currentWordCount > initialCount) {
+            this.wordCount += (currentWordCount - initialCount);
+            this.initialWordCounts.set(filePath, currentWordCount);
+        }
+    }
 
     getDuration(): number {
         const end = this.endTime || new Date();
@@ -180,12 +216,14 @@ class StudySession {
             distractions: this.distractions,
             lineNotes: this.lineNotes,
             modifiedFiles: Array.from(this.modifiedFiles),
+            openedFiles: Array.from(this.openedFiles),
             completedTasks: this.completedTasks,
             reflections: this.reflections,
             date: this.startTime.toISOString().split('T')[0],
             completed: this.completed,
             isBreak: this.isBreak,
-            pauseDuration: Math.round(this.totalPauseDuration / 60000)
+            pauseDuration: Math.round(this.totalPauseDuration / 60000),
+            wordCount: this.wordCount
         };
     }
 }
@@ -648,9 +686,16 @@ class StudyFlowView extends ItemView {
 
     async completeTimer(): Promise<void> {
         this.pauseTimer();
+        
         if (!this.isBreak) {
             this.pomodoroCount++;
             if (this.plugin.currentSession) {
+                // Save session notes before ending the session
+                this.plugin.currentSession.notes = this.notesArea.value;
+                if (this.plugin.settings.showDifficulty) {
+                    this.plugin.currentSession.difficulty = parseInt(this.difficultySlider.value);
+                }
+                
                 this.plugin.currentSession.pomodorosCompleted++;
                 const sessionData = this.plugin.currentSession.end();
                 await this.plugin.saveSessionToFile(sessionData);
@@ -670,6 +715,10 @@ class StudyFlowView extends ItemView {
                 this.timeLeft = breakTime * 60;
                 this.isBreak = true;
 
+                // Clear input fields after ending the session
+                this.notesArea.value = '';
+                this.distractionInput.value = '';
+                
                 this.plugin.startNewSession('Break');
                 this.categorySelect.value = 'Break';
 
@@ -689,8 +738,15 @@ class StudyFlowView extends ItemView {
             this.isBreak = false;
 
             if (this.plugin.currentSession) {
+                // Save break notes before ending
+                this.plugin.currentSession.notes = this.notesArea.value;
+                
                 const sessionData = this.plugin.currentSession.end();
                 await this.plugin.saveSessionToFile(sessionData);
+                
+                // Clear input fields after ending the break
+                this.notesArea.value = '';
+                this.distractionInput.value = '';
             }
 
             if (this.plugin.settings.autoStartPomodoros) {
@@ -969,6 +1025,65 @@ class StudyFlowSettingTab extends PluginSettingTab {
                     this.plugin.settings.trackModifiedFiles = value;
                     await this.plugin.saveSettings();
                 }));
+                
+        new Setting(containerEl)
+            .setName('Track opened files')
+            .setDesc('Track files that are opened during a study session')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.trackOpenedFiles)
+                .onChange(async (value) => {
+                    this.plugin.settings.trackOpenedFiles = value;
+                    await this.plugin.saveSettings();
+                }));
+                
+        new Setting(containerEl)
+            .setName('Track word count')
+            .setDesc('Track the number of words written during study sessions')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.trackWordCount)
+                .onChange(async (value) => {
+                    this.plugin.settings.trackWordCount = value;
+                    await this.plugin.saveSettings();
+                }));
+                
+        containerEl.createEl('h3', { text: 'Summary Settings' });
+        
+        new Setting(containerEl)
+            .setName('Create daily summary')
+            .setDesc('Create a daily summary note at the end of the day')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.createDailySummary)
+                .onChange(async (value) => {
+                    this.plugin.settings.createDailySummary = value;
+                    await this.plugin.saveSettings();
+                }));
+                
+        new Setting(containerEl)
+            .setName('Enable weekly summary')
+            .setDesc('Automatically create a weekly summary note')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.enableWeeklySummary)
+                .onChange(async (value) => {
+                    this.plugin.settings.enableWeeklySummary = value;
+                    await this.plugin.saveSettings();
+                }));
+                
+        new Setting(containerEl)
+            .setName('Weekly summary day')
+            .setDesc('Day of the week to create the weekly summary')
+            .addDropdown(dropdown => dropdown
+                .addOption('0', 'Sunday')
+                .addOption('1', 'Monday')
+                .addOption('2', 'Tuesday')
+                .addOption('3', 'Wednesday')
+                .addOption('4', 'Thursday')
+                .addOption('5', 'Friday')
+                .addOption('6', 'Saturday')
+                .setValue(String(this.plugin.settings.weeklySummaryDay))
+                .onChange(async (value) => {
+                    this.plugin.settings.weeklySummaryDay = parseInt(value);
+                    await this.plugin.saveSettings();
+                }));
     }
 }
 
@@ -988,6 +1103,11 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 console.log('Notification permission denied');
             }
         }
+        
+        // Check if we need to create a weekly summary
+        this.app.workspace.onLayoutReady(() => {
+            this.checkWeeklySummary();
+        });
 
         this.registerView(
             VIEW_TYPE_STUDY_FLOW,
@@ -1007,7 +1127,14 @@ export default class StudyAnalyticsPlugin extends Plugin {
             name: 'Create Daily Summary',
             callback: async () => {
                 await this.createDailySummary();
-                new Notice('Daily summary created');
+            }
+        });
+        
+        this.addCommand({
+            id: 'create-weekly-summary',
+            name: 'Create Weekly Summary',
+            callback: async () => {
+                await this.createWeeklySummary();
             }
         });
 
@@ -1092,17 +1219,41 @@ export default class StudyAnalyticsPlugin extends Plugin {
         this.statusBarItem = this.addStatusBarItem();
         this.updateStatusBar('25:00');
 
+        // Track file modifications
         this.registerEvent(
             this.app.vault.on('modify', async (file) => {
-                if (this.currentSession && this.settings.trackModifiedFiles) {
+                if (this.currentSession && file instanceof TFile) {
                     if (!this.settings.focusPath || file.path.startsWith(this.settings.focusPath)) {
-                        this.currentSession.trackModifiedFile(file.path);
-
-                        const content = await this.app.vault.cachedRead(file as TFile);
+                        // Track modified files
+                        if (this.settings.trackModifiedFiles) {
+                            this.currentSession.trackModifiedFile(file.path);
+                        }
+                        
+                        // Get content of modified file
+                        const content = await this.app.vault.cachedRead(file);
+                        
+                        // Track completed tasks
                         const newTasks = this.findNewlyCompletedTasks(content, file.path);
                         newTasks.forEach(task => {
                             this.currentSession.addCompletedTask(task);
                         });
+                        
+                        // Track word count if enabled
+                        if (this.settings.trackWordCount) {
+                            const wordCount = this.countWords(content);
+                            this.currentSession.updateWordCount(file.path, wordCount);
+                        }
+                    }
+                }
+            })
+        );
+        
+        // Track opened files
+        this.registerEvent(
+            this.app.workspace.on('file-open', (file) => {
+                if (this.currentSession && file && this.settings.trackOpenedFiles) {
+                    if (!this.settings.focusPath || file.path.startsWith(this.settings.focusPath)) {
+                        this.currentSession.trackOpenedFile(file.path);
                     }
                 }
             })
@@ -1177,54 +1328,92 @@ export default class StudyAnalyticsPlugin extends Plugin {
         );
     }
 
-    async createDailySummary() {
-        const date = new Date().toISOString().split('T')[0];
+    async createDailySummary(date?: string) {
+        const summaryDate = date || new Date().toISOString().split('T')[0];
         const tempFolderPath = `${this.settings.notesFolder}/temp`;
-        const summaryFileName = `${date}_daily_summary.md`;
+        const summaryFileName = `${summaryDate}_daily_summary.md`;
         const summaryFilePath = `${this.settings.notesFolder}/${summaryFileName}`;
+        let studySessions: SessionData[] = [];
+        let breakSessions: SessionData[] = [];
 
         try {
             if (!(await this.app.vault.adapter.exists(tempFolderPath))) {
-                return new Notice('No study sessions found for today');
+                new Notice('No study sessions found for the specified date');
+                return null;
             }
             
             const tempFiles = await this.app.vault.adapter.list(tempFolderPath);
-            const sessions: SessionData[] = [];
-            let totalTime = 0;
+            let totalStudyTime = 0;
+            let totalBreakTime = 0;
             let totalPomodoros = 0;
             let totalDistractions = 0;
             const modifiedFiles = new Set<string>();
+            const openedFiles = new Set<string>();
             let totalTasks = 0;
+            let totalWordCount = 0;
             const difficulties: number[] = [];
 
-            // Collect data from all temporary files
+            // Collect data from all temporary files for the specified date
             for (const file of tempFiles.files) {
                 const content = await this.app.vault.adapter.read(file);
                 const sessionData = JSON.parse(content) as SessionData;
-                sessions.push(sessionData);
-
-                totalTime += sessionData.duration;
-                totalPomodoros += sessionData.pomodoros;
-                totalDistractions += sessionData.distractions.length;
-                sessionData.modifiedFiles.forEach(f => modifiedFiles.add(f));
-                totalTasks += sessionData.completedTasks.length;
-                difficulties.push(sessionData.difficulty);
+                
+                // Only include sessions from the specified date
+                if (sessionData.date === summaryDate) {
+                    if (sessionData.isBreak) {
+                        breakSessions.push(sessionData);
+                        totalBreakTime += sessionData.duration;
+                    } else {
+                        studySessions.push(sessionData);
+                        totalStudyTime += sessionData.duration;
+                        totalPomodoros += sessionData.pomodoros;
+                        totalDistractions += sessionData.distractions.length;
+                        sessionData.modifiedFiles.forEach(f => modifiedFiles.add(f));
+                        sessionData.openedFiles?.forEach(f => openedFiles.add(f));
+                        totalTasks += sessionData.completedTasks.length;
+                        difficulties.push(sessionData.difficulty);
+                        totalWordCount += sessionData.wordCount || 0;
+                    }
+                }
+            }
+            
+            if (studySessions.length === 0) {
+                new Notice(`No study sessions found for ${summaryDate}`);
+                return null;
             }
 
             const avgDifficulty = difficulties.length > 0
                 ? (difficulties.reduce((a, b) => a + b) / difficulties.length).toFixed(1)
                 : '0';
+                
+            // Calculate hours and minutes for better readability
+            const studyHours = Math.floor(totalStudyTime / 60);
+            const studyMinutes = totalStudyTime % 60;
+            const breakHours = Math.floor(totalBreakTime / 60);
+            const breakMinutes = totalBreakTime % 60;
+            const totalTimeHours = Math.floor((totalStudyTime + totalBreakTime) / 60);
+            const totalTimeMinutes = (totalStudyTime + totalBreakTime) % 60;
 
-            // Create the summary
-            let summaryContent = `# Daily Study Summary - ${date}\n\n`;
+            // Create the summary with inline frontmatter
+            let summaryContent = `# Daily Study Summary - ${summaryDate}\n\n`;
+            summaryContent += `Study time:: ${studyHours}h ${studyMinutes}m\n`;
+            summaryContent += `Break time:: ${breakHours}h ${breakMinutes}m\n`;
+            summaryContent += `Total time:: ${totalTimeHours}h ${totalTimeMinutes}m\n`;
+            summaryContent += `Pomodoros:: ${totalPomodoros}\n`;
+            summaryContent += `Modified files:: ${modifiedFiles.size}\n`;
+            summaryContent += `Words written:: ${totalWordCount}\n\n`;
 
             // Daily statistics
             summaryContent += `## 📊 Daily Statistics\n`;
-            summaryContent += `- ⏱️ Total Study Time: ${totalTime} minutes\n`;
+            summaryContent += `- ⏱️ Study Time: ${studyHours}h ${studyMinutes}m\n`;
+            summaryContent += `- ⏸️ Break Time: ${breakHours}h ${breakMinutes}m\n`;
+            summaryContent += `- 🕙 Total Time: ${totalTimeHours}h ${totalTimeMinutes}m\n`;
             summaryContent += `- 🍅 Total Pomodoros: ${totalPomodoros}\n`;
             summaryContent += `- ⚠️ Total Distractions: ${totalDistractions}\n`;
             summaryContent += `- 📝 Modified Files: ${modifiedFiles.size}\n`;
+            summaryContent += `- 📖 Opened Files: ${openedFiles.size}\n`;
             summaryContent += `- ✅ Completed Tasks: ${totalTasks}\n`;
+            summaryContent += `- 📏 Words Written: ${totalWordCount}\n`;
             summaryContent += `- 📈 Average Difficulty: ${avgDifficulty}/5\n\n`;
 
             // Modified Files Overview
@@ -1235,13 +1424,25 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 });
                 summaryContent += '\n';
             }
+            
+            // Opened Files Overview
+            if (openedFiles.size > 0) {
+                summaryContent += `## 📖 Opened Files Overview\n`;
+                openedFiles.forEach(file => {
+                    summaryContent += `- [[${file}|${file.split('/').pop()}]]\n`;
+                });
+                summaryContent += '\n';
+            }
 
             // Individual Sessions
-            sessions.forEach((session, index) => {
+            studySessions.forEach((session, index) => {
                 summaryContent += `## Study Session ${index + 1}: ${session.category}\n`;
                 summaryContent += `- Start Time: ${new Date(session.startTime).toLocaleTimeString()}\n`;
-                summaryContent += `- Duration: ${session.duration} minutes\n`;
+                summaryContent += `- Duration: ${Math.floor(session.duration / 60)}h ${session.duration % 60}m\n`;
                 summaryContent += `- Pomodoros: ${session.pomodoros}\n`;
+                if (session.wordCount) {
+                    summaryContent += `- Words Written: ${session.wordCount}\n`;
+                }
                 summaryContent += `- Difficulty: ${session.difficulty}/5\n\n`;
 
                 if (session.notes) {
@@ -1271,22 +1472,208 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 }
             });
 
-            // Save the summary
+            // Save the summary if requested
+            if (this.settings.createDailySummary || !date) {
+                if (!(await this.app.vault.adapter.exists(this.settings.notesFolder))) {
+                    await this.app.vault.createFolder(this.settings.notesFolder);
+                }
+                
+                await this.app.vault.create(summaryFilePath, summaryContent);
+                
+                if (!date) {
+                    // Only delete temp files if creating summary for today
+                    // When creating the weekly summary, we need to keep temp files
+                    for (const file of tempFiles.files) {
+                        const content = await this.app.vault.adapter.read(file);
+                        const sessionData = JSON.parse(content) as SessionData;
+                        if (sessionData.date === summaryDate) {
+                            await this.app.vault.adapter.remove(file);
+                        }
+                    }
+                    new Notice('Daily summary created successfully!');
+                }
+            }
+            
+            return {
+                studySessions,
+                breakSessions,
+                totalStudyTime,
+                totalBreakTime,
+                totalPomodoros,
+                totalDistractions,
+                totalTasks,
+                totalWordCount,
+                avgDifficulty,
+                modifiedFiles: Array.from(modifiedFiles),
+                openedFiles: Array.from(openedFiles)
+            };
+            
+        } catch (error) {
+            console.error('Error creating daily summary:', error);
+            new Notice('Error creating daily summary');
+            return null;
+        }
+    }
+    
+    async createWeeklySummary() {
+        try {
+            // Determine the start and end dates of the current week
+            const now = new Date();
+            const currentDay = now.getDay(); // 0 = Sunday, 1 = Monday, etc.
+            const diff = now.getDate() - currentDay + (currentDay === 0 ? -6 : 1); // Adjust for Sunday
+            const monday = new Date(now.setDate(diff));
+            monday.setHours(0,0,0,0);
+            
+            const sunday = new Date(monday);
+            sunday.setDate(sunday.getDate() + 6);
+            
+            // Generate an array of dates for the week
+            const weekDates: string[] = [];
+            const currentDate = new Date(monday);
+            
+            while (currentDate <= sunday) {
+                weekDates.push(currentDate.toISOString().split('T')[0]);
+                currentDate.setDate(currentDate.getDate() + 1);
+            }
+            
+            // Collect data for each day
+            let weeklyStudyTime = 0;
+            let weeklyBreakTime = 0;
+            let weeklyPomodoros = 0;
+            let weeklyDistractions = 0;
+            let weeklyTasks = 0;
+            let weeklyWordCount = 0;
+            const allDifficulties: number[] = [];
+            const modifiedFiles = new Set<string>();
+            const openedFiles = new Set<string>();
+            const dayReports: { 
+                date: string, 
+                studyTime: number, 
+                breakTime: number,
+                pomodoros: number,
+                wordCount: number 
+            }[] = [];
+            
+            // Process each day of the week
+            for (const date of weekDates) {
+                const dayData = await this.createDailySummary(date);
+                
+                if (dayData) {
+                    weeklyStudyTime += dayData.totalStudyTime;
+                    weeklyBreakTime += dayData.totalBreakTime;
+                    weeklyPomodoros += dayData.totalPomodoros;
+                    weeklyDistractions += dayData.totalDistractions;
+                    weeklyTasks += dayData.totalTasks;
+                    weeklyWordCount += dayData.totalWordCount;
+                    
+                    dayData.modifiedFiles.forEach(file => modifiedFiles.add(file));
+                    dayData.openedFiles.forEach(file => openedFiles.add(file));
+                    
+                    if (dayData.avgDifficulty && parseFloat(dayData.avgDifficulty) > 0) {
+                        allDifficulties.push(parseFloat(dayData.avgDifficulty));
+                    }
+                    
+                    // Add to daily reports
+                    dayReports.push({
+                        date,
+                        studyTime: dayData.totalStudyTime,
+                        breakTime: dayData.totalBreakTime,
+                        pomodoros: dayData.totalPomodoros,
+                        wordCount: dayData.totalWordCount
+                    });
+                }
+            }
+            
+            if (dayReports.length === 0) {
+                new Notice('No study data found for this week');
+                return;
+            }
+            
+            // Calculate weekly averages and statistics
+            const avgDifficulty = allDifficulties.length > 0
+                ? (allDifficulties.reduce((a, b) => a + b) / allDifficulties.length).toFixed(1)
+                : '0';
+                
+            // Calculate hours and minutes
+            const studyHours = Math.floor(weeklyStudyTime / 60);
+            const studyMinutes = weeklyStudyTime % 60;
+            const breakHours = Math.floor(weeklyBreakTime / 60);
+            const breakMinutes = weeklyBreakTime % 60;
+            const totalTimeHours = Math.floor((weeklyStudyTime + weeklyBreakTime) / 60);
+            const totalTimeMinutes = (weeklyStudyTime + weeklyBreakTime) % 60;
+            
+            // Format the date range for the title
+            const mondayStr = monday.toISOString().split('T')[0];
+            const sundayStr = sunday.toISOString().split('T')[0];
+            const weekRange = `${mondayStr} to ${sundayStr}`;
+            
+            let summaryContent = `# Weekly Study Summary - ${weekRange}\n\n`;
+            summaryContent += `Study time:: ${studyHours}h ${studyMinutes}m\n`;
+            summaryContent += `Break time:: ${breakHours}h ${breakMinutes}m\n`;
+            summaryContent += `Total time:: ${totalTimeHours}h ${totalTimeMinutes}m\n`;
+            summaryContent += `Pomodoros:: ${weeklyPomodoros}\n`;
+            summaryContent += `Modified files:: ${modifiedFiles.size}\n`;
+            summaryContent += `Words written:: ${weeklyWordCount}\n\n`;
+            
+            // Weekly Statistics
+            summaryContent += `## 📊 Weekly Statistics\n`;
+            summaryContent += `- ⏱️ Study Time: ${studyHours}h ${studyMinutes}m\n`;
+            summaryContent += `- ⏸️ Break Time: ${breakHours}h ${breakMinutes}m\n`;
+            summaryContent += `- 🕙 Total Time: ${totalTimeHours}h ${totalTimeMinutes}m\n`;
+            summaryContent += `- 🍅 Total Pomodoros: ${weeklyPomodoros}\n`;
+            summaryContent += `- ⚠️ Total Distractions: ${weeklyDistractions}\n`;
+            summaryContent += `- 📝 Modified Files: ${modifiedFiles.size}\n`;
+            summaryContent += `- 📖 Opened Files: ${openedFiles.size}\n`;
+            summaryContent += `- ✅ Completed Tasks: ${weeklyTasks}\n`;
+            summaryContent += `- 📏 Words Written: ${weeklyWordCount}\n`;
+            summaryContent += `- 📈 Average Difficulty: ${avgDifficulty}/5\n\n`;
+            
+            // Daily Breakdown
+            summaryContent += `## 📆 Daily Breakdown\n`;
+            summaryContent += `| Date | Study Time | Break Time | Pomodoros | Words Written |\n`;
+            summaryContent += `| ---- | ---------- | ---------- | --------- | ------------- |\n`;
+            
+            dayReports.forEach(day => {
+                const dayStudyHours = Math.floor(day.studyTime / 60);
+                const dayStudyMinutes = day.studyTime % 60;
+                const dayBreakHours = Math.floor(day.breakTime / 60);
+                const dayBreakMinutes = day.breakTime % 60;
+                
+                summaryContent += `| ${day.date} | ${dayStudyHours}h ${dayStudyMinutes}m | ${dayBreakHours}h ${dayBreakMinutes}m | ${day.pomodoros} | ${day.wordCount} |\n`;
+            });
+            
+            summaryContent += '\n';
+            
+            // Modified Files Overview - limited to 10 for brevity
+            if (modifiedFiles.size > 0) {
+                summaryContent += `## 📝 Most Modified Files\n`;
+                const fileArray = Array.from(modifiedFiles);
+                const limitedFiles = fileArray.slice(0, 10);
+                limitedFiles.forEach(file => {
+                    summaryContent += `- [[${file}|${file.split('/').pop()}]]\n`;
+                });
+                
+                if (fileArray.length > 10) {
+                    summaryContent += `- ... and ${fileArray.length - 10} more files\n`;
+                }
+                
+                summaryContent += '\n';
+            }
+            
+            // Create the weekly summary file
+            const weeklyFileName = `${mondayStr}_weekly_summary.md`;
+            const weeklyFilePath = `${this.settings.notesFolder}/${weeklyFileName}`;
+            
             if (!(await this.app.vault.adapter.exists(this.settings.notesFolder))) {
                 await this.app.vault.createFolder(this.settings.notesFolder);
             }
             
-            await this.app.vault.create(summaryFilePath, summaryContent);
-
-            // Delete temporary files
-            for (const file of tempFiles.files) {
-                await this.app.vault.adapter.remove(file);
-            }
-
-            new Notice('Daily summary created successfully!');
+            await this.app.vault.create(weeklyFilePath, summaryContent);
+            new Notice('Weekly summary created successfully!');
+            
         } catch (error) {
-            console.error('Error creating daily summary:', error);
-            new Notice('Error creating daily summary');
+            console.error('Error creating weekly summary:', error);
+            new Notice('Error creating weekly summary');
         }
     }
 
@@ -1306,6 +1693,50 @@ export default class StudyAnalyticsPlugin extends Plugin {
 
     updateStatusBar(time: string) {
         this.statusBarItem.setText(`🍅 ${time}`);
+    }
+    
+    // Count words in text content
+    countWords(text: string): number {
+        // Remove markdown formatting, code blocks, and other non-word content
+        const cleanedText = text
+            .replace(/```[\s\S]*?```/g, '') // Remove code blocks
+            .replace(/`[^`]*`/g, '')       // Remove inline code
+            .replace(/\[.*?\]\(.*?\)/g, '') // Remove link syntax
+            .replace(/\!\[.*?\]\(.*?\)/g, '') // Remove image syntax
+            .replace(/\[\[.*?\]\]/g, '')    // Remove wikilinks
+            .replace(/#[\w-]+/g, '')        // Remove tags
+            .replace(/^\s*[-+*]\s+/gm, '')  // Remove list markers
+            .replace(/^\s*\d+\.\s+/gm, '')  // Remove numbered list markers
+            .replace(/^\s*>\s+/gm, '')      // Remove blockquote markers
+            .replace(/^#+\s+/gm, '')       // Remove header markers
+            .replace(/\*\*|\*|~~|__|_/g, ''); // Remove emphasis markers
+        
+        // Count words by splitting on whitespace and filtering empty strings
+        return cleanedText.split(/\s+/).filter(word => word.length > 0).length;
+    }
+    
+    // Function to check if it's time to create the weekly summary
+    async checkWeeklySummary() {
+        if (!this.settings.enableWeeklySummary) return;
+        
+        const now = new Date();
+        const today = now.getDay(); // 0 = Sunday, 1 = Monday, etc.
+        
+        // If today matches the configured weekly summary day
+        if (today === this.settings.weeklySummaryDay) {
+            // Check if we already created the weekly summary today
+            const lastWeeklySummaryDate = this.settings.lastWeeklySummary || '';
+            const todayStr = now.toISOString().split('T')[0];
+            
+            if (lastWeeklySummaryDate !== todayStr) {
+                // Create the weekly summary
+                await this.createWeeklySummary();
+                
+                // Update the last summary date
+                this.settings.lastWeeklySummary = todayStr;
+                await this.saveSettings();
+            }
+        }
     }
 
     onunload() {
