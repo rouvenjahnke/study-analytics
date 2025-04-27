@@ -28,6 +28,11 @@ interface StudyAnalyticsSettings {
     preserveTempFiles: boolean; // If enabled, don't delete temp files after daily summary
     tagsToTrack: string[]; // Tags to specifically track in summaries
     trackCreatedNotes: boolean; // Track newly created notes
+    trackWithoutSession: boolean; // Track Obsidian usage without explicit session (until 23:59)
+    autoDailySummary: boolean; // Automatically create daily summary at midnight
+    autoWeeklySummary: boolean; // Automatically create weekly summary on specified day
+    keepLongTermData: boolean; // Keep session data long-term instead of deleting after summaries
+    trackTaggedNotes: boolean; // Track notes with specific tags
 }
 
 const DEFAULT_SETTINGS: StudyAnalyticsSettings = {
@@ -54,7 +59,12 @@ const DEFAULT_SETTINGS: StudyAnalyticsSettings = {
     folderCategoryMappings: {},
     preserveTempFiles: true,
     tagsToTrack: [],
-    trackCreatedNotes: true
+    trackCreatedNotes: true,
+    trackWithoutSession: false, // Track Obsidian usage without explicit session (until 23:59)
+    autoDailySummary: false, // Automatically create daily summary at midnight
+    autoWeeklySummary: false, // Automatically create weekly summary on specified day
+    keepLongTermData: true, // Keep session data long-term instead of deleting after summaries
+    trackTaggedNotes: false, // Track notes with specific tags
 };
 
 interface DistractionNote {
@@ -691,6 +701,12 @@ class StudyFlowView extends ItemView {
             }
             
             const wasRunning = this.isRunning;
+            
+            // Remember timer state for continuity
+            const timeLeftBackup = this.timeLeft;
+            const stopwatchElapsedBackup = this.stopwatchElapsed;
+            const isStopwatchBackup = this.isStopwatch;
+            
             if (wasRunning) {
                 this.pauseTimer();
             }
@@ -709,6 +725,13 @@ class StudyFlowView extends ItemView {
             
             // Keep notes if continuing same work in different category
             // this.notesArea.value = ''; // Uncomment to clear notes on category change
+            
+            // Restore timer state for continuity
+            if (isStopwatchBackup) {
+                this.stopwatchElapsed = stopwatchElapsedBackup;
+            } else {
+                this.timeLeft = timeLeftBackup;
+            }
             
             if (wasRunning) {
                 this.startTimer();
@@ -828,6 +851,11 @@ class StudyFlowView extends ItemView {
                 this.notesArea.value = '';
                 this.distractionInput.value = '';
                 
+                // Reset difficulty slider
+                if (this.difficultySlider) {
+                    this.difficultySlider.value = '1';
+                }
+                
                 this.plugin.startNewSession('~Break~');
                 this.categorySelect.value = '~Break~';
 
@@ -856,6 +884,11 @@ class StudyFlowView extends ItemView {
                 // Clear input fields after ending the break
                 this.notesArea.value = '';
                 this.distractionInput.value = '';
+                
+                // Reset difficulty slider
+                if (this.difficultySlider) {
+                    this.difficultySlider.value = '1';
+                }
             }
 
             if (this.plugin.settings.autoStartPomodoros) {
@@ -1054,7 +1087,7 @@ class StudyFlowSettingTab extends PluginSettingTab {
                 .onClick(() => {
                     let value = categoryInput.components[0] as any;
                     value = value?.inputEl?.value;
-                    if (value && value !== 'Break') {
+                    if (value && value !== '~Break~') {
                         this.plugin.settings.categories.push(value);
                         this.plugin.saveSettings();
                         (categoryInput.components[0] as any).inputEl.value = '';
@@ -1203,6 +1236,26 @@ class StudyFlowSettingTab extends PluginSettingTab {
                     this.plugin.settings.preserveTempFiles = value;
                     await this.plugin.saveSettings();
                 }));
+                
+        new Setting(containerEl)
+            .setName('Keep long-term session data')
+            .setDesc('Store session data long-term instead of deleting after summaries')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.keepLongTermData)
+                .onChange(async (value) => {
+                    this.plugin.settings.keepLongTermData = value;
+                    await this.plugin.saveSettings();
+                }));
+                
+        new Setting(containerEl)
+            .setName('Track tagged notes')
+            .setDesc('Track notes with specific tags in summaries')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.trackTaggedNotes)
+                .onChange(async (value) => {
+                    this.plugin.settings.trackTaggedNotes = value;
+                    await this.plugin.saveSettings();
+                }));
 
         new Setting(containerEl)
             .setName('Reset timer on new session')
@@ -1221,6 +1274,26 @@ class StudyFlowSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.autoTrackSessionOnStartup)
                 .onChange(async (value) => {
                     this.plugin.settings.autoTrackSessionOnStartup = value;
+                    await this.plugin.saveSettings();
+                }));
+                
+        new Setting(containerEl)
+            .setName('Auto-create daily summary')
+            .setDesc('Automatically create daily summary at midnight')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.autoDailySummary)
+                .onChange(async (value) => {
+                    this.plugin.settings.autoDailySummary = value;
+                    await this.plugin.saveSettings();
+                }));
+                
+        new Setting(containerEl)
+            .setName('Auto-create weekly summary')
+            .setDesc('Automatically create weekly summary on the specified day')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.autoWeeklySummary)
+                .onChange(async (value) => {
+                    this.plugin.settings.autoWeeklySummary = value;
                     await this.plugin.saveSettings();
                 }));
                 
@@ -1469,7 +1542,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
         this.registerEvent(
             this.app.vault.on('modify', async (file) => {
                 if (this.currentSession && file instanceof TFile) {
-                    // If focusPath is empty, track all files
+                    // Always track files (if focusPath is empty, track all files)
                     const shouldTrack = !this.settings.focusPath || file.path.startsWith(this.settings.focusPath);
                     
                     if (shouldTrack) {
@@ -1506,7 +1579,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
         this.registerEvent(
             this.app.workspace.on('file-open', (file) => {
                 if (this.currentSession && file && this.settings.trackOpenedFiles) {
-                    // If focusPath is empty, track all files
+                    // Always track files (if focusPath is empty, track all files)
                     const shouldTrack = !this.settings.focusPath || file.path.startsWith(this.settings.focusPath);
                     
                     if (shouldTrack) {
@@ -1525,7 +1598,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
         this.registerEvent(
             this.app.vault.on('create', (file) => {
                 if (this.currentSession && file instanceof TFile && this.settings.trackCreatedNotes) {
-                    // If focusPath is empty, track all files
+                    // Always track files (if focusPath is empty, track all files)
                     const shouldTrack = !this.settings.focusPath || file.path.startsWith(this.settings.focusPath);
                     
                     if (shouldTrack) {
@@ -1825,10 +1898,11 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 
                 await this.app.vault.create(summaryFilePath, summaryContent);
                 
-                if (!date && !this.settings.preserveTempFiles) {
+                if (!date && !this.settings.preserveTempFiles && !this.settings.keepLongTermData) {
                     // Only delete temp files if:
                     // 1. We're creating a summary for today, and
-                    // 2. preserveTempFiles setting is OFF
+                    // 2. preserveTempFiles setting is OFF, and
+                    // 3. keepLongTermData setting is OFF
                     for (const file of tempFiles.files) {
                         const content = await this.app.vault.adapter.read(file);
                         const sessionData = JSON.parse(content) as SessionData;
@@ -1894,17 +1968,31 @@ export default class StudyAnalyticsPlugin extends Plugin {
             let weeklyWordCount = 0;
             let totalCreatedFiles = 0;
             let totalCreatedLinks = 0;
+            let totalCreatedNotes = 0;
+            let totalModifiedNotes = 0;
+            
             const allDifficulties: number[] = [];
             const modifiedFiles = new Set<string>();
             const openedFiles = new Set<string>();
             const createdFiles = new Set<string>();
             const createdLinks = new Set<string>();
+            const taggedNotes = new Map<string, Set<string>>();
+            
+            // Initialize tag tracking
+            if (this.settings.trackTaggedNotes && this.settings.tagsToTrack) {
+                for (const tag of this.settings.tagsToTrack) {
+                    taggedNotes.set(tag, new Set<string>());
+                }
+            }
+            
             const dayReports: { 
                 date: string, 
                 studyTime: number, 
                 breakTime: number,
                 pomodoros: number,
-                wordCount: number 
+                wordCount: number,
+                createdNotes: number,
+                modifiedNotes: number 
             }[] = [];
             
             // Process each day of the week
@@ -1914,6 +2002,10 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 // Process this day's data whether or not we have study sessions
                 // This ensures we still add entries with zeros for days with no activity
                 {
+                    // Count created and modified markdown files for this day
+                    let dayCreatedNotes = 0;
+                    let dayModifiedNotes = 0;
+                    
                     // Create a placeholder day report even if no study sessions exist
                     if (!dayData) {
                         dayReports.push({
@@ -1921,7 +2013,9 @@ export default class StudyAnalyticsPlugin extends Plugin {
                             studyTime: 0,
                             breakTime: 0,
                             pomodoros: 0,
-                            wordCount: 0
+                            wordCount: 0,
+                            createdNotes: 0,
+                            modifiedNotes: 0
                         });
                     } else {
                         weeklyStudyTime += dayData.totalStudyTime;
@@ -1931,18 +2025,63 @@ export default class StudyAnalyticsPlugin extends Plugin {
                         weeklyTasks += dayData.totalTasks;
                         weeklyWordCount += dayData.totalWordCount;
                         
-                        dayData.modifiedFiles.forEach(file => modifiedFiles.add(file));
+                        // Process modified files
+                        dayData.modifiedFiles.forEach(file => {
+                            modifiedFiles.add(file);
+                            if (file.endsWith('.md')) {
+                                dayModifiedNotes++;
+                                totalModifiedNotes++;
+                            }
+                        });
+                        
                         dayData.openedFiles.forEach(file => openedFiles.add(file));
                         
                         // Extract created files and links data from daily reports if available
                         if (Array.isArray(dayData.createdFiles)) {
-                            dayData.createdFiles.forEach(file => createdFiles.add(file));
+                            dayData.createdFiles.forEach(file => {
+                                createdFiles.add(file);
+                                if (file.endsWith('.md')) {
+                                    dayCreatedNotes++;
+                                    totalCreatedNotes++;
+                                }
+                            });
                             totalCreatedFiles = createdFiles.size;
                         }
                         
                         if (Array.isArray(dayData.createdLinks)) {
                             dayData.createdLinks.forEach(link => createdLinks.add(link));
                             totalCreatedLinks = createdLinks.size;
+                        }
+                        
+                        // Track tagged notes if enabled
+                        if (this.settings.trackTaggedNotes && 
+                            this.settings.tagsToTrack && 
+                            this.settings.tagsToTrack.length > 0) {
+                            
+                            // Find all markdown files that were modified during this day
+                            const possibleTaggedFiles = dayData.modifiedFiles
+                                .filter(file => file.endsWith('.md'));
+                                
+                            // Check each file for the tracked tags
+                            for (const file of possibleTaggedFiles) {
+                                const tfile = this.app.vault.getAbstractFileByPath(file);
+                                if (tfile instanceof TFile) {
+                                    const cache = this.app.metadataCache.getFileCache(tfile);
+                                    if (cache && cache.tags) {
+                                        const fileTags = cache.tags.map(t => t.tag);
+                                        
+                                        // Check against each tracked tag
+                                        for (const trackedTag of this.settings.tagsToTrack) {
+                                            if (fileTags.includes(trackedTag)) {
+                                                const tagSet = taggedNotes.get(trackedTag);
+                                                if (tagSet) {
+                                                    tagSet.add(file);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                         
                         if (dayData.avgDifficulty && parseFloat(dayData.avgDifficulty) > 0) {
@@ -1955,7 +2094,9 @@ export default class StudyAnalyticsPlugin extends Plugin {
                             studyTime: dayData.totalStudyTime,
                             breakTime: dayData.totalBreakTime,
                             pomodoros: dayData.totalPomodoros,
-                            wordCount: dayData.totalWordCount
+                            wordCount: dayData.totalWordCount,
+                            createdNotes: dayCreatedNotes,
+                            modifiedNotes: dayModifiedNotes
                         });
                     }
                 }
@@ -2002,6 +2143,8 @@ export default class StudyAnalyticsPlugin extends Plugin {
             summaryContent += `- 📝 Modified Files: ${modifiedFiles.size}\n`;
             summaryContent += `- 📖 Opened Files: ${openedFiles.size}\n`;
             summaryContent += `- 📄 Created Files: ${totalCreatedFiles}\n`;
+            summaryContent += `- 📔 Created Notes: ${totalCreatedNotes}\n`;
+            summaryContent += `- 📝 Modified Notes: ${totalModifiedNotes}\n`;
             summaryContent += `- 🔗 Created Links: ${totalCreatedLinks}\n`;
             summaryContent += `- ✅ Completed Tasks: ${weeklyTasks}\n`;
             summaryContent += `- 📏 Words Written: ${weeklyWordCount}\n`;
@@ -2009,8 +2152,8 @@ export default class StudyAnalyticsPlugin extends Plugin {
             
             // Daily Breakdown
             summaryContent += `## 📆 Daily Breakdown\n`;
-            summaryContent += `| Date | Study Time | Break Time | Pomodoros | Words Written |\n`;
-            summaryContent += `| ---- | ---------- | ---------- | --------- | ------------- |\n`;
+            summaryContent += `| Date | Study Time | Break Time | Pomodoros | Words Written | Created Notes | Modified Notes |\n`;
+            summaryContent += `| ---- | ---------- | ---------- | --------- | ------------- | ------------ | -------------- |\n`;
             
             dayReports.forEach(day => {
                 const dayStudyHours = Math.floor(day.studyTime / 60);
@@ -2018,7 +2161,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 const dayBreakHours = Math.floor(day.breakTime / 60);
                 const dayBreakMinutes = day.breakTime % 60;
                 
-                summaryContent += `| ${day.date} | ${dayStudyHours}h ${dayStudyMinutes}m | ${dayBreakHours}h ${dayBreakMinutes}m | ${day.pomodoros} | ${day.wordCount} |\n`;
+                summaryContent += `| ${day.date} | ${dayStudyHours}h ${dayStudyMinutes}m | ${dayBreakHours}h ${dayBreakMinutes}m | ${day.pomodoros} | ${day.wordCount} | ${day.createdNotes} | ${day.modifiedNotes} |\n`;
             });
             
             summaryContent += '\n';
@@ -2103,7 +2246,11 @@ export default class StudyAnalyticsPlugin extends Plugin {
             summaryContent += `weekly_words_written:: ${weeklyWordCount}\n`;
             summaryContent += `weekly_modified_files:: ${modifiedFiles.size}\n`;
             summaryContent += `weekly_created_files:: ${totalCreatedFiles}\n`;
-            summaryContent += `weekly_created_links:: ${totalCreatedLinks}\n\n`;
+            summaryContent += `weekly_created_notes:: ${totalCreatedNotes}\n`;
+            summaryContent += `weekly_modified_notes:: ${totalModifiedNotes}\n`;
+            summaryContent += `weekly_created_links:: ${totalCreatedLinks}\n`;
+            summaryContent += `weekly_tasks_completed:: ${weeklyTasks}\n`;
+            summaryContent += `weekly_distractions:: ${weeklyDistractions}\n\n`;
             
             // Add charts if there's data
             if (dayReports.length > 0) {
@@ -2129,6 +2276,21 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 summaryContent += '    data: [' + dayReports.map(d => d.studyTime).join(', ') + ']\n';
                 summaryContent += 'width: 100%\n';
                 summaryContent += 'labelColors: true\n';
+                summaryContent += '```\n\n';
+                
+                // Add notes created/modified chart
+                summaryContent += '## 📝 Notes Created & Modified Chart\n\n';
+                summaryContent += '```chart\n';
+                summaryContent += 'type: bar\n';
+                summaryContent += 'labels: [' + dayReports.map(d => `"${d.date}"`).join(', ') + ']\n';
+                summaryContent += 'series:\n';
+                summaryContent += '  - title: Notes Created\n';
+                summaryContent += '    data: [' + dayReports.map(d => d.createdNotes).join(', ') + ']\n';
+                summaryContent += '  - title: Notes Modified\n';
+                summaryContent += '    data: [' + dayReports.map(d => d.modifiedNotes).join(', ') + ']\n';
+                summaryContent += 'width: 100%\n';
+                summaryContent += 'labelColors: true\n';
+                summaryContent += 'stacked: true\n';
                 summaryContent += '```\n\n';
                 
                 // Add tracked tags information if any are configured
