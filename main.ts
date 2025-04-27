@@ -92,6 +92,7 @@ interface SessionData {
     lineNotes: LineNote[];
     modifiedFiles: string[];
     openedFiles: string[];
+    createdFiles: string[]; // Files created during the session
     completedTasks: CompletedTask[];
     reflections: ReflectionNote[];
     date: string;
@@ -99,6 +100,7 @@ interface SessionData {
     isBreak: boolean;
     pauseDuration: number;
     wordCount: number;
+    createdLinks: string[]; // Links created during the session
 }
 
 class StudySession {
@@ -112,6 +114,7 @@ class StudySession {
     lineNotes: LineNote[];
     modifiedFiles: Set<string>;
     openedFiles: Set<string>;
+    createdFiles: Set<string>;
     completed: boolean;
     completedTasks: CompletedTask[];
     reflections: ReflectionNote[];
@@ -120,6 +123,8 @@ class StudySession {
     isBreak: boolean;
     wordCount: number;
     initialWordCounts: Map<string, number>;
+    createdLinks: Set<string>;
+    initialLinkCounts: Map<string, number>;
 
     constructor(category: string) {
         this.category = category;
@@ -132,6 +137,7 @@ class StudySession {
         this.lineNotes = [];
         this.modifiedFiles = new Set<string>();
         this.openedFiles = new Set<string>();
+        this.createdFiles = new Set<string>();
         this.completed = false;
         this.completedTasks = [];
         this.reflections = [];
@@ -140,6 +146,8 @@ class StudySession {
         this.isBreak = category === '~Break~';
         this.wordCount = 0;
         this.initialWordCounts = new Map<string, number>();
+        this.createdLinks = new Set<string>();
+        this.initialLinkCounts = new Map<string, number>();
     }
 
     pause(): void {
@@ -207,6 +215,27 @@ class StudySession {
             this.initialWordCounts.set(filePath, currentWordCount);
         }
     }
+    
+    trackCreatedFile(file: string): void {
+        this.createdFiles.add(file);
+    }
+    
+    updateLinkCount(filePath: string, currentLinkCount: number): void {
+        if (!this.initialLinkCounts.has(filePath)) {
+            this.initialLinkCounts.set(filePath, currentLinkCount);
+            return;
+        }
+        
+        const initialCount = this.initialLinkCounts.get(filePath) || 0;
+        if (currentLinkCount > initialCount) {
+            // Add each new link to the created links set
+            const newLinks = currentLinkCount - initialCount;
+            for (let i = 0; i < newLinks; i++) {
+                this.createdLinks.add(`${filePath}:${initialCount + i + 1}`);
+            }
+            this.initialLinkCounts.set(filePath, currentLinkCount);
+        }
+    }
 
     getDuration(): number {
         const end = this.endTime || new Date();
@@ -231,13 +260,15 @@ class StudySession {
             lineNotes: this.lineNotes,
             modifiedFiles: Array.from(this.modifiedFiles),
             openedFiles: Array.from(this.openedFiles),
+            createdFiles: Array.from(this.createdFiles),
             completedTasks: this.completedTasks,
             reflections: this.reflections,
             date: this.startTime.toISOString().split('T')[0],
             completed: this.completed,
             isBreak: this.isBreak,
             pauseDuration: Math.round(this.totalPauseDuration / 60000),
-            wordCount: this.wordCount
+            wordCount: this.wordCount,
+            createdLinks: Array.from(this.createdLinks)
         };
     }
 }
@@ -1500,6 +1531,27 @@ export default class StudyAnalyticsPlugin extends Plugin {
                     if (shouldTrack) {
                         this.currentSession.trackModifiedFile(file.path);
                         this.currentSession.trackOpenedFile(file.path);
+                        this.currentSession.trackCreatedFile(file.path);
+                        
+                        // Reset link count for new files
+                        this.currentSession.initialLinkCounts.set(file.path, 0);
+                    }
+                }
+            })
+        );
+        
+        // Track link creation through modify events
+        this.registerEvent(
+            this.app.metadataCache.on('changed', (file) => {
+                if (this.currentSession && file instanceof TFile) {
+                    const shouldTrack = !this.settings.focusPath || file.path.startsWith(this.settings.focusPath);
+                    
+                    if (shouldTrack) {
+                        const cache = this.app.metadataCache.getFileCache(file);
+                        if (cache) {
+                            const linkCount = (cache.links || []).length + (cache.embeds || []).length;
+                            this.currentSession.updateLinkCount(file.path, linkCount);
+                        }
                     }
                 }
             })
@@ -1595,8 +1647,12 @@ export default class StudyAnalyticsPlugin extends Plugin {
             let totalDistractions = 0;
             const modifiedFiles = new Set<string>();
             const openedFiles = new Set<string>();
+            const createdFiles = new Set<string>();
+            const createdLinks = new Set<string>();
             let totalTasks = 0;
             let totalWordCount = 0;
+            let totalCreatedFiles = 0;
+            let totalCreatedLinks = 0;
             const difficulties: number[] = [];
 
             // Collect data from all temporary files for the specified date
@@ -1616,12 +1672,17 @@ export default class StudyAnalyticsPlugin extends Plugin {
                         totalDistractions += sessionData.distractions.length;
                         sessionData.modifiedFiles.forEach(f => modifiedFiles.add(f));
                         sessionData.openedFiles?.forEach(f => openedFiles.add(f));
+                        sessionData.createdFiles?.forEach(f => createdFiles.add(f));
+                        sessionData.createdLinks?.forEach(l => createdLinks.add(l));
                         totalTasks += sessionData.completedTasks.length;
                         difficulties.push(sessionData.difficulty);
                         totalWordCount += sessionData.wordCount || 0;
                     }
                 }
             }
+            
+            totalCreatedFiles = createdFiles.size;
+            totalCreatedLinks = createdLinks.size;
             
             if (studySessions.length === 0) {
                 new Notice(`No study sessions found for ${summaryDate}`);
@@ -1647,6 +1708,8 @@ export default class StudyAnalyticsPlugin extends Plugin {
             summaryContent += `Total time:: ${totalTimeHours}h ${totalTimeMinutes}m\n`;
             summaryContent += `Pomodoros:: ${totalPomodoros}\n`;
             summaryContent += `Modified files:: ${modifiedFiles.size}\n`;
+            summaryContent += `Created files:: ${totalCreatedFiles}\n`;
+            summaryContent += `Created links:: ${totalCreatedLinks}\n`;
             summaryContent += `Words written:: ${totalWordCount}\n\n`;
 
             // Daily statistics
@@ -1658,6 +1721,8 @@ export default class StudyAnalyticsPlugin extends Plugin {
             summaryContent += `- ⚠️ Total Distractions: ${totalDistractions}\n`;
             summaryContent += `- 📝 Modified Files: ${modifiedFiles.size}\n`;
             summaryContent += `- 📖 Opened Files: ${openedFiles.size}\n`;
+            summaryContent += `- 📄 Created Files: ${totalCreatedFiles}\n`;
+            summaryContent += `- 🔗 Created Links: ${totalCreatedLinks}\n`;
             summaryContent += `- ✅ Completed Tasks: ${totalTasks}\n`;
             summaryContent += `- 📏 Words Written: ${totalWordCount}\n`;
             summaryContent += `- 📈 Average Difficulty: ${avgDifficulty}/5\n\n`;
@@ -1679,6 +1744,34 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 });
                 summaryContent += '\n';
             }
+            
+            // Created Files Overview
+            if (createdFiles.size > 0) {
+                summaryContent += `## 📄 Created Files Overview\n`;
+                createdFiles.forEach(file => {
+                    summaryContent += `- [[${file}|${file.split('/').pop()}]]\n`;
+                });
+                summaryContent += '\n';
+            }
+            
+            // Created Links Overview
+            if (createdLinks.size > 0) {
+                summaryContent += `## 🔗 Created Links Overview\n`;
+                createdLinks.forEach(link => {
+                    if (typeof link === 'string') {
+                        const parts = link.split(':');
+                        if (parts.length === 2) {
+                            const [filePath, index] = parts;
+                            summaryContent += `- Link ${index} in [[${filePath}|${filePath.split('/').pop()}]]\n`;
+                        } else {
+                            summaryContent += `- ${link}\n`;
+                        }
+                    } else {
+                        summaryContent += `- Unknown link format\n`;
+                    }
+                });
+                summaryContent += '\n';
+            }
 
             // Individual Sessions
             studySessions.forEach((session, index) => {
@@ -1688,6 +1781,12 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 summaryContent += `- Pomodoros: ${session.pomodoros}\n`;
                 if (session.wordCount) {
                     summaryContent += `- Words Written: ${session.wordCount}\n`;
+                }
+                if (session.createdFiles && session.createdFiles.length > 0) {
+                    summaryContent += `- Created Files: ${session.createdFiles.length}\n`;
+                }
+                if (session.createdLinks && session.createdLinks.length > 0) {
+                    summaryContent += `- Created Links: ${session.createdLinks.length}\n`;
                 }
                 summaryContent += `- Difficulty: ${session.difficulty}/5\n\n`;
 
@@ -1753,7 +1852,9 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 totalWordCount,
                 avgDifficulty,
                 modifiedFiles: Array.from(modifiedFiles),
-                openedFiles: Array.from(openedFiles)
+                openedFiles: Array.from(openedFiles),
+                createdFiles: Array.from(createdFiles),
+                createdLinks: Array.from(createdLinks)
             };
             
         } catch (error) {
@@ -1791,9 +1892,13 @@ export default class StudyAnalyticsPlugin extends Plugin {
             let weeklyDistractions = 0;
             let weeklyTasks = 0;
             let weeklyWordCount = 0;
+            let totalCreatedFiles = 0;
+            let totalCreatedLinks = 0;
             const allDifficulties: number[] = [];
             const modifiedFiles = new Set<string>();
             const openedFiles = new Set<string>();
+            const createdFiles = new Set<string>();
+            const createdLinks = new Set<string>();
             const dayReports: { 
                 date: string, 
                 studyTime: number, 
@@ -1828,6 +1933,17 @@ export default class StudyAnalyticsPlugin extends Plugin {
                         
                         dayData.modifiedFiles.forEach(file => modifiedFiles.add(file));
                         dayData.openedFiles.forEach(file => openedFiles.add(file));
+                        
+                        // Extract created files and links data from daily reports if available
+                        if (Array.isArray(dayData.createdFiles)) {
+                            dayData.createdFiles.forEach(file => createdFiles.add(file));
+                            totalCreatedFiles = createdFiles.size;
+                        }
+                        
+                        if (Array.isArray(dayData.createdLinks)) {
+                            dayData.createdLinks.forEach(link => createdLinks.add(link));
+                            totalCreatedLinks = createdLinks.size;
+                        }
                         
                         if (dayData.avgDifficulty && parseFloat(dayData.avgDifficulty) > 0) {
                             allDifficulties.push(parseFloat(dayData.avgDifficulty));
@@ -1885,6 +2001,8 @@ export default class StudyAnalyticsPlugin extends Plugin {
             summaryContent += `- ⚠️ Total Distractions: ${weeklyDistractions}\n`;
             summaryContent += `- 📝 Modified Files: ${modifiedFiles.size}\n`;
             summaryContent += `- 📖 Opened Files: ${openedFiles.size}\n`;
+            summaryContent += `- 📄 Created Files: ${totalCreatedFiles}\n`;
+            summaryContent += `- 🔗 Created Links: ${totalCreatedLinks}\n`;
             summaryContent += `- ✅ Completed Tasks: ${weeklyTasks}\n`;
             summaryContent += `- 📏 Words Written: ${weeklyWordCount}\n`;
             summaryContent += `- 📈 Average Difficulty: ${avgDifficulty}/5\n\n`;
@@ -1916,6 +2034,26 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 
                 if (fileArray.length > 10) {
                     summaryContent += `- ... and ${fileArray.length - 10} more files\n`;
+                }
+                
+                summaryContent += '\n';
+            }
+            
+            // Created Files Overview - limited to 10 for brevity
+            if (totalCreatedFiles > 0) {
+                summaryContent += `## 📄 Created Files\n`;
+                const createdFilesArray = Array.from(createdFiles);
+                const limitedCreatedFiles = createdFilesArray.slice(0, 10);
+                limitedCreatedFiles.forEach(file => {
+                    if (typeof file === 'string') {
+                        summaryContent += `- [[${file}|${file.split('/').pop()}]]\n`;
+                    } else {
+                        summaryContent += `- Unknown file format\n`;
+                    }
+                });
+                
+                if (createdFilesArray.length > 10) {
+                    summaryContent += `- ... and ${createdFilesArray.length - 10} more files\n`;
                 }
                 
                 summaryContent += '\n';
@@ -1963,7 +2101,9 @@ export default class StudyAnalyticsPlugin extends Plugin {
             summaryContent += `weekly_total_time:: ${totalTimeHours}h ${totalTimeMinutes}m\n`;
             summaryContent += `weekly_pomodoros:: ${weeklyPomodoros}\n`;
             summaryContent += `weekly_words_written:: ${weeklyWordCount}\n`;
-            summaryContent += `weekly_modified_files:: ${modifiedFiles.size}\n\n`;
+            summaryContent += `weekly_modified_files:: ${modifiedFiles.size}\n`;
+            summaryContent += `weekly_created_files:: ${totalCreatedFiles}\n`;
+            summaryContent += `weekly_created_links:: ${totalCreatedLinks}\n\n`;
             
             // Add charts if there's data
             if (dayReports.length > 0) {
