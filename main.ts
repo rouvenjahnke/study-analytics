@@ -21,6 +21,13 @@ interface StudyAnalyticsSettings {
     trackOpenedFiles: boolean;
     trackWordCount: boolean;
     lastWeeklySummary?: string; // Last date when weekly summary was created
+    resetTimerOnNewSession: boolean; // If enabled, timer resets when new session starts
+    autoTrackSessionOnStartup: boolean; // If enabled, automatically starts tracking when Obsidian opens
+    autoSetCategoryByFolder: boolean; // If enabled, automatically sets category based on folder
+    folderCategoryMappings: Record<string, string>; // Maps folder paths to categories
+    preserveTempFiles: boolean; // If enabled, don't delete temp files after daily summary
+    tagsToTrack: string[]; // Tags to specifically track in summaries
+    trackCreatedNotes: boolean; // Track newly created notes
 }
 
 const DEFAULT_SETTINGS: StudyAnalyticsSettings = {
@@ -30,7 +37,7 @@ const DEFAULT_SETTINGS: StudyAnalyticsSettings = {
     longBreakInterval: 4,
     notesFolder: 'Study Sessions',
     focusPath: '',
-    categories: ['Study', 'Work', 'Reading', 'Project', 'Break'],
+    categories: ['Study', 'Work', 'Reading', 'Project', '~Break~'],
     tags: ['#important', '#question', '#difficult', '#review'],
     autoStartBreaks: true,
     autoStartPomodoros: false,
@@ -40,7 +47,14 @@ const DEFAULT_SETTINGS: StudyAnalyticsSettings = {
     weeklySummaryDay: 0, // Sunday by default
     createDailySummary: true,
     trackOpenedFiles: true,
-    trackWordCount: true
+    trackWordCount: true,
+    resetTimerOnNewSession: false,
+    autoTrackSessionOnStartup: false,
+    autoSetCategoryByFolder: false,
+    folderCategoryMappings: {},
+    preserveTempFiles: true,
+    tagsToTrack: [],
+    trackCreatedNotes: true
 };
 
 interface DistractionNote {
@@ -123,7 +137,7 @@ class StudySession {
         this.reflections = [];
         this.pauseStartTime = null;
         this.totalPauseDuration = 0;
-        this.isBreak = category === 'Break';
+        this.isBreak = category === '~Break~';
         this.wordCount = 0;
         this.initialWordCounts = new Map<string, number>();
     }
@@ -336,13 +350,36 @@ class StudyFlowView extends ItemView {
             const category = this.categorySelect.value;
             this.plugin.startNewSession(category);
 
+            // Reset input fields
             this.notesArea.value = '';
             this.distractionInput.value = '';
+            
+            // Always reset difficulty to 1 for new sessions
             if (this.difficultySlider) {
                 this.difficultySlider.value = '1';
             }
-
-            new Notice('New session started - Timer continues');
+            
+            // Optionally reset timer based on settings
+            if (this.plugin.settings.resetTimerOnNewSession) {
+                if (!this.isStopwatch) {
+                    this.timeLeft = this.plugin.settings.pomodoroTime * 60;
+                } else {
+                    this.stopwatchElapsed = 0;
+                    this.stopwatchStartTime = null;
+                }
+                
+                // If timer was running, restart it with the reset time
+                const wasRunning = this.isRunning;
+                if (wasRunning) {
+                    this.pauseTimer();
+                    this.startTimer();
+                }
+                
+                this.updateTimerDisplay();
+                new Notice('New session started - Timer reset');
+            } else {
+                new Notice('New session started - Timer continues');
+            }
         };
 
         // End Button
@@ -356,6 +393,10 @@ class StudyFlowView extends ItemView {
         const categoryDiv = container.createEl('div', { cls: 'category-section' });
         categoryDiv.createEl('label', { text: 'Category: ' });
         this.categorySelect = categoryDiv.createEl('select');
+        this.categorySelect.onchange = () => {
+            // When selection changes, start a new session with the selected category
+            this.changeCategory(this.categorySelect.value);
+        };
         this.updateCategorySelect();
 
         // Difficulty Slider
@@ -518,12 +559,12 @@ class StudyFlowView extends ItemView {
     updateCategorySelect(): void {
         this.categorySelect.empty();
         this.plugin.settings.categories.forEach(cat => {
-            if (!this.isBreak || cat === 'Break') {
+            if (!this.isBreak || cat === '~Break~') {
                 const option = this.categorySelect.createEl('option', {
                     text: cat,
                     value: cat
                 });
-                if (cat === 'Break') {
+                if (cat === '~Break~') {
                     option.disabled = !this.isBreak;
                 }
             }
@@ -606,6 +647,43 @@ class StudyFlowView extends ItemView {
             this.pauseTimer();
         } else {
             this.startTimer();
+        }
+    }
+    
+    changeCategory(newCategory: string): void {
+        // Only change if different from current category
+        if (this.plugin.currentSession && this.plugin.currentSession.category !== newCategory) {
+            // Save current session
+            this.plugin.currentSession.notes = this.notesArea.value;
+            if (this.plugin.settings.showDifficulty) {
+                this.plugin.currentSession.difficulty = parseInt(this.difficultySlider.value);
+            }
+            
+            const wasRunning = this.isRunning;
+            if (wasRunning) {
+                this.pauseTimer();
+            }
+            
+            const sessionData = this.plugin.currentSession.end();
+            this.plugin.saveSessionToFile(sessionData);
+            
+            // Start new session with new category
+            this.plugin.startNewSession(newCategory);
+            this.categorySelect.value = newCategory;
+            
+            // Reset difficulty slider if shown
+            if (this.difficultySlider) {
+                this.difficultySlider.value = '1';
+            }
+            
+            // Keep notes if continuing same work in different category
+            // this.notesArea.value = ''; // Uncomment to clear notes on category change
+            
+            if (wasRunning) {
+                this.startTimer();
+            }
+            
+            new Notice(`Category changed to ${newCategory}`);
         }
     }
 
@@ -719,8 +797,8 @@ class StudyFlowView extends ItemView {
                 this.notesArea.value = '';
                 this.distractionInput.value = '';
                 
-                this.plugin.startNewSession('Break');
-                this.categorySelect.value = 'Break';
+                this.plugin.startNewSession('~Break~');
+                this.categorySelect.value = '~Break~';
 
                 if (this.plugin.settings.autoStartBreaks) {
                     this.startTimer();
@@ -750,7 +828,7 @@ class StudyFlowView extends ItemView {
             }
 
             if (this.plugin.settings.autoStartPomodoros) {
-                const category = this.plugin.settings.categories.find(c => c !== 'Break') || 'Study';
+                const category = this.plugin.settings.categories.find(c => c !== '~Break~') || 'Study';
                 this.plugin.startNewSession(category);
                 this.categorySelect.value = category;
                 this.startTimer();
@@ -1084,6 +1162,142 @@ class StudyFlowSettingTab extends PluginSettingTab {
                     this.plugin.settings.weeklySummaryDay = parseInt(value);
                     await this.plugin.saveSettings();
                 }));
+                
+        new Setting(containerEl)
+            .setName('Preserve temporary session files')
+            .setDesc('Keep temporary session data files even after creating summaries (for historical data)')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.preserveTempFiles)
+                .onChange(async (value) => {
+                    this.plugin.settings.preserveTempFiles = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Reset timer on new session')
+            .setDesc('Reset the timer when starting a new session')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.resetTimerOnNewSession)
+                .onChange(async (value) => {
+                    this.plugin.settings.resetTimerOnNewSession = value;
+                    await this.plugin.saveSettings();
+                }));
+                
+        new Setting(containerEl)
+            .setName('Auto-track sessions on startup')
+            .setDesc('Automatically start tracking when Obsidian opens')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.autoTrackSessionOnStartup)
+                .onChange(async (value) => {
+                    this.plugin.settings.autoTrackSessionOnStartup = value;
+                    await this.plugin.saveSettings();
+                }));
+                
+        new Setting(containerEl)
+            .setName('Auto-set category by folder')
+            .setDesc('Automatically set category based on folder')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.autoSetCategoryByFolder)
+                .onChange(async (value) => {
+                    this.plugin.settings.autoSetCategoryByFolder = value;
+                    await this.plugin.saveSettings();
+                }));
+                
+        // Folder-Category mapping
+        if (this.plugin.settings.autoSetCategoryByFolder) {
+            containerEl.createEl('h4', { text: 'Folder-Category Mappings' });
+            
+            // Add existing mappings
+            for (const folderPath in this.plugin.settings.folderCategoryMappings) {
+                const category = this.plugin.settings.folderCategoryMappings[folderPath];
+                
+                const mappingSetting = new Setting(containerEl)
+                    .setName(folderPath)
+                    .setDesc(`Category: ${category}`);
+                    
+                mappingSetting.addButton(button => button
+                    .setIcon('trash')
+                    .setTooltip('Delete mapping')
+                    .onClick(async () => {
+                        delete this.plugin.settings.folderCategoryMappings[folderPath];
+                        await this.plugin.saveSettings();
+                        this.display();
+                    }));
+            }
+            
+            // Add new mapping
+            const newMappingSetting = new Setting(containerEl)
+                .setName('Add Folder-Category Mapping')
+                .setDesc('Map a folder path to a specific category');
+                
+            let folderPathInput: HTMLInputElement;
+            let categoryDropdown: HTMLSelectElement;
+            
+            newMappingSetting.addText(text => {
+                folderPathInput = text.inputEl;
+                return text
+                    .setPlaceholder('Folder path (e.g., folder/subfolder)')
+                    .setValue('');
+            });
+            
+            newMappingSetting.addDropdown(dropdown => {
+                categoryDropdown = dropdown.selectEl;
+                
+                // Add all non-break categories as options
+                this.plugin.settings.categories.forEach(cat => {
+                    if (cat !== '~Break~') {
+                        dropdown.addOption(cat, cat);
+                    }
+                });
+                
+                return dropdown
+                    .setValue(this.plugin.settings.categories[0] || 'Study');
+            });
+            
+            newMappingSetting.addButton(button => button
+                .setIcon('plus')
+                .setTooltip('Add mapping')
+                .onClick(async () => {
+                    const folderPath = folderPathInput.value.trim();
+                    const category = categoryDropdown.value;
+                    
+                    if (folderPath && category) {
+                        this.plugin.settings.folderCategoryMappings[folderPath] = category;
+                        await this.plugin.saveSettings();
+                        // Reset input field
+                        folderPathInput.value = '';
+                        // Refresh display
+                        this.display();
+                    }
+                }));
+        }
+
+        // Tags to track
+        containerEl.createEl('h4', { text: 'Tags to Track' });
+        
+        const tagsToTrackSetting = new Setting(containerEl)
+            .setName('Tags to Track')
+            .setDesc('Track notes with these tags in weekly summaries (comma-separated, include # if needed)');
+            
+        tagsToTrackSetting.addText(text => text
+            .setPlaceholder('#tag1, #tag2')
+            .setValue(this.plugin.settings.tagsToTrack.join(', '))
+            .onChange(async (value) => {
+                this.plugin.settings.tagsToTrack = value.split(',')
+                    .map(tag => tag.trim())
+                    .filter(tag => tag.length > 0);
+                await this.plugin.saveSettings();
+            }));
+            
+        new Setting(containerEl)
+            .setName('Track created notes')
+            .setDesc('Track newly created notes during sessions')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.trackCreatedNotes)
+                .onChange(async (value) => {
+                    this.plugin.settings.trackCreatedNotes = value;
+                    await this.plugin.saveSettings();
+                }));
     }
 }
 
@@ -1104,9 +1318,10 @@ export default class StudyAnalyticsPlugin extends Plugin {
             }
         }
         
-        // Check if we need to create a weekly summary
+        // Check if we need to create a weekly summary and start auto-tracking
         this.app.workspace.onLayoutReady(() => {
             this.checkWeeklySummary();
+            this.startAutoTracking();
         });
 
         this.registerView(
@@ -1223,7 +1438,10 @@ export default class StudyAnalyticsPlugin extends Plugin {
         this.registerEvent(
             this.app.vault.on('modify', async (file) => {
                 if (this.currentSession && file instanceof TFile) {
-                    if (!this.settings.focusPath || file.path.startsWith(this.settings.focusPath)) {
+                    // If focusPath is empty, track all files
+                    const shouldTrack = !this.settings.focusPath || file.path.startsWith(this.settings.focusPath);
+                    
+                    if (shouldTrack) {
                         // Track modified files
                         if (this.settings.trackModifiedFiles) {
                             this.currentSession.trackModifiedFile(file.path);
@@ -1243,6 +1461,11 @@ export default class StudyAnalyticsPlugin extends Plugin {
                             const wordCount = this.countWords(content);
                             this.currentSession.updateWordCount(file.path, wordCount);
                         }
+                        
+                        // Auto-set category based on folder if enabled
+                        if (this.settings.autoSetCategoryByFolder) {
+                            this.updateCategoryByFolder(file.path);
+                        }
                     }
                 }
             })
@@ -1252,7 +1475,30 @@ export default class StudyAnalyticsPlugin extends Plugin {
         this.registerEvent(
             this.app.workspace.on('file-open', (file) => {
                 if (this.currentSession && file && this.settings.trackOpenedFiles) {
-                    if (!this.settings.focusPath || file.path.startsWith(this.settings.focusPath)) {
+                    // If focusPath is empty, track all files
+                    const shouldTrack = !this.settings.focusPath || file.path.startsWith(this.settings.focusPath);
+                    
+                    if (shouldTrack) {
+                        this.currentSession.trackOpenedFile(file.path);
+                        
+                        // Auto-set category based on folder if enabled
+                        if (this.settings.autoSetCategoryByFolder) {
+                            this.updateCategoryByFolder(file.path);
+                        }
+                    }
+                }
+            })
+        );
+        
+        // Track file creation
+        this.registerEvent(
+            this.app.vault.on('create', (file) => {
+                if (this.currentSession && file instanceof TFile && this.settings.trackCreatedNotes) {
+                    // If focusPath is empty, track all files
+                    const shouldTrack = !this.settings.focusPath || file.path.startsWith(this.settings.focusPath);
+                    
+                    if (shouldTrack) {
+                        this.currentSession.trackModifiedFile(file.path);
                         this.currentSession.trackOpenedFile(file.path);
                     }
                 }
@@ -1480,9 +1726,10 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 
                 await this.app.vault.create(summaryFilePath, summaryContent);
                 
-                if (!date) {
-                    // Only delete temp files if creating summary for today
-                    // When creating the weekly summary, we need to keep temp files
+                if (!date && !this.settings.preserveTempFiles) {
+                    // Only delete temp files if:
+                    // 1. We're creating a summary for today, and
+                    // 2. preserveTempFiles setting is OFF
                     for (const file of tempFiles.files) {
                         const content = await this.app.vault.adapter.read(file);
                         const sessionData = JSON.parse(content) as SessionData;
@@ -1490,8 +1737,9 @@ export default class StudyAnalyticsPlugin extends Plugin {
                             await this.app.vault.adapter.remove(file);
                         }
                     }
-                    new Notice('Daily summary created successfully!');
                 }
+                
+                new Notice('Daily summary created successfully!');
             }
             
             return {
@@ -1558,29 +1806,42 @@ export default class StudyAnalyticsPlugin extends Plugin {
             for (const date of weekDates) {
                 const dayData = await this.createDailySummary(date);
                 
-                if (dayData) {
-                    weeklyStudyTime += dayData.totalStudyTime;
-                    weeklyBreakTime += dayData.totalBreakTime;
-                    weeklyPomodoros += dayData.totalPomodoros;
-                    weeklyDistractions += dayData.totalDistractions;
-                    weeklyTasks += dayData.totalTasks;
-                    weeklyWordCount += dayData.totalWordCount;
-                    
-                    dayData.modifiedFiles.forEach(file => modifiedFiles.add(file));
-                    dayData.openedFiles.forEach(file => openedFiles.add(file));
-                    
-                    if (dayData.avgDifficulty && parseFloat(dayData.avgDifficulty) > 0) {
-                        allDifficulties.push(parseFloat(dayData.avgDifficulty));
+                // Process this day's data whether or not we have study sessions
+                // This ensures we still add entries with zeros for days with no activity
+                {
+                    // Create a placeholder day report even if no study sessions exist
+                    if (!dayData) {
+                        dayReports.push({
+                            date,
+                            studyTime: 0,
+                            breakTime: 0,
+                            pomodoros: 0,
+                            wordCount: 0
+                        });
+                    } else {
+                        weeklyStudyTime += dayData.totalStudyTime;
+                        weeklyBreakTime += dayData.totalBreakTime;
+                        weeklyPomodoros += dayData.totalPomodoros;
+                        weeklyDistractions += dayData.totalDistractions;
+                        weeklyTasks += dayData.totalTasks;
+                        weeklyWordCount += dayData.totalWordCount;
+                        
+                        dayData.modifiedFiles.forEach(file => modifiedFiles.add(file));
+                        dayData.openedFiles.forEach(file => openedFiles.add(file));
+                        
+                        if (dayData.avgDifficulty && parseFloat(dayData.avgDifficulty) > 0) {
+                            allDifficulties.push(parseFloat(dayData.avgDifficulty));
+                        }
+                        
+                        // Add to daily reports
+                        dayReports.push({
+                            date,
+                            studyTime: dayData.totalStudyTime,
+                            breakTime: dayData.totalBreakTime,
+                            pomodoros: dayData.totalPomodoros,
+                            wordCount: dayData.totalWordCount
+                        });
                     }
-                    
-                    // Add to daily reports
-                    dayReports.push({
-                        date,
-                        studyTime: dayData.totalStudyTime,
-                        breakTime: dayData.totalBreakTime,
-                        pomodoros: dayData.totalPomodoros,
-                        wordCount: dayData.totalWordCount
-                    });
                 }
             }
             
@@ -1661,6 +1922,93 @@ export default class StudyAnalyticsPlugin extends Plugin {
             }
             
             // Create the weekly summary file
+            // Add created/modified notes count per day to the dayReports
+            const createdNotes = new Map<string, Set<string>>();
+            const tagsTracking = new Map<string, Set<string>>();
+            
+            // Add data for tag tracking
+            if (this.settings.tagsToTrack.length > 0) {
+                // Initialize the tag tracking for each tag
+                this.settings.tagsToTrack.forEach(tag => {
+                    tagsTracking.set(tag, new Set<string>());
+                });
+                
+                // Go through all vault files to find notes with tracked tags
+                const markdownFiles = this.app.vault.getMarkdownFiles();
+                for (const file of markdownFiles) {
+                    const fileCache = this.app.metadataCache.getFileCache(file);
+                    if (fileCache && fileCache.tags) {
+                        // Check if file has any of the tracked tags
+                        const fileTags = fileCache.tags.map(t => t.tag);
+                        for (const trackedTag of this.settings.tagsToTrack) {
+                            if (fileTags.includes(trackedTag)) {
+                                // Add file to this tag's tracking set
+                                const tagSet = tagsTracking.get(trackedTag);
+                                if (tagSet) {
+                                    tagSet.add(file.path);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Generate some visualization data for the charts
+            const wordsData = dayReports.map(day => [day.date, day.wordCount]);
+            const timeData = dayReports.map(day => [day.date, day.studyTime]);
+            
+            // Add weekly data in frontmatter format
+            summaryContent += `weekly_study_time:: ${studyHours}h ${studyMinutes}m\n`;
+            summaryContent += `weekly_break_time:: ${breakHours}h ${breakMinutes}m\n`;
+            summaryContent += `weekly_total_time:: ${totalTimeHours}h ${totalTimeMinutes}m\n`;
+            summaryContent += `weekly_pomodoros:: ${weeklyPomodoros}\n`;
+            summaryContent += `weekly_words_written:: ${weeklyWordCount}\n`;
+            summaryContent += `weekly_modified_files:: ${modifiedFiles.size}\n\n`;
+            
+            // Add charts if there's data
+            if (dayReports.length > 0) {
+                // Add word count chart
+                summaryContent += '## 📊 Word Count Chart\n\n';
+                summaryContent += '```chart\n';
+                summaryContent += 'type: bar\n';
+                summaryContent += 'labels: [' + dayReports.map(d => `"${d.date}"`).join(', ') + ']\n';
+                summaryContent += 'series:\n';
+                summaryContent += '  - title: Words Written\n';
+                summaryContent += '    data: [' + dayReports.map(d => d.wordCount).join(', ') + ']\n';
+                summaryContent += 'width: 100%\n';
+                summaryContent += 'labelColors: true\n';
+                summaryContent += '```\n\n';
+                
+                // Add study time chart
+                summaryContent += '## ⏱️ Study Time Chart\n\n';
+                summaryContent += '```chart\n';
+                summaryContent += 'type: bar\n';
+                summaryContent += 'labels: [' + dayReports.map(d => `"${d.date}"`).join(', ') + ']\n';
+                summaryContent += 'series:\n';
+                summaryContent += '  - title: Study Minutes\n';
+                summaryContent += '    data: [' + dayReports.map(d => d.studyTime).join(', ') + ']\n';
+                summaryContent += 'width: 100%\n';
+                summaryContent += 'labelColors: true\n';
+                summaryContent += '```\n\n';
+                
+                // Add tracked tags information if any are configured
+                if (this.settings.tagsToTrack.length > 0) {
+                    summaryContent += '## 🏷️ Tracked Tags\n\n';
+                    
+                    for (const [tag, files] of tagsTracking.entries()) {
+                        summaryContent += `### ${tag} (${files.size} files)\n\n`;
+                        if (files.size > 0) {
+                            for (const file of files) {
+                                summaryContent += `- [[${file}|${file.split('/').pop()}]]\n`;
+                            }
+                            summaryContent += '\n';
+                        } else {
+                            summaryContent += '*No files with this tag*\n\n';
+                        }
+                    }
+                }
+            }
+            
             const weeklyFileName = `${mondayStr}_weekly_summary.md`;
             const weeklyFilePath = `${this.settings.notesFolder}/${weeklyFileName}`;
             
@@ -1695,6 +2043,37 @@ export default class StudyAnalyticsPlugin extends Plugin {
         this.statusBarItem.setText(`🍅 ${time}`);
     }
     
+    // Auto-update category based on current folder
+    updateCategoryByFolder(filePath: string): void {
+        if (!this.currentSession || this.currentSession.isBreak) return;
+        
+        // If no folder mappings defined, don't change anything
+        if (Object.keys(this.settings.folderCategoryMappings).length === 0) return;
+        
+        const view = this.getStudyFlowView();
+        if (!view) return;
+        
+        // Extract folder path from file path
+        const folderPath = filePath.substring(0, filePath.lastIndexOf('/'));
+        
+        // Try to find the longest matching folder path in the mappings
+        let bestMatch = '';
+        let bestMatchCategory = '';
+        
+        for (const path in this.settings.folderCategoryMappings) {
+            // If this path is a prefix of the current folder and longer than current best match
+            if (folderPath.startsWith(path) && path.length > bestMatch.length) {
+                bestMatch = path;
+                bestMatchCategory = this.settings.folderCategoryMappings[path];
+            }
+        }
+        
+        // If we found a match and it's different from current category, change category
+        if (bestMatchCategory && this.currentSession.category !== bestMatchCategory) {
+            view.changeCategory(bestMatchCategory);
+        }
+    }
+    
     // Count words in text content
     countWords(text: string): number {
         // Remove markdown formatting, code blocks, and other non-word content
@@ -1713,6 +2092,26 @@ export default class StudyAnalyticsPlugin extends Plugin {
         
         // Count words by splitting on whitespace and filtering empty strings
         return cleanedText.split(/\s+/).filter(word => word.length > 0).length;
+    }
+    
+    // Start auto-tracking when Obsidian opens
+    startAutoTracking(): void {
+        if (!this.currentSession && this.settings.autoTrackSessionOnStartup) {
+            const defaultCategory = this.settings.categories.find(c => c !== '~Break~') || 'Study';
+            this.startNewSession(defaultCategory);
+            
+            const view = this.getStudyFlowView();
+            if (view) {
+                view.categorySelect.value = defaultCategory;
+                
+                // Optionally start the timer
+                if (!view.isRunning) {
+                    view.startTimer();
+                }
+            }
+            
+            new Notice(`Auto-tracking started - Category: ${defaultCategory}`);
+        }
     }
     
     // Function to check if it's time to create the weekly summary
