@@ -4,6 +4,7 @@ node_modules/
 # Built files
 main.js
 *.js.map
+dist/
 
 # Editor directories and files
 .idea/
