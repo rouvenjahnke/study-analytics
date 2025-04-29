@@ -1,4 +1,4 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, TFile } from 'obsidian';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, TFile, TextComponent } from 'obsidian';
 
 const VIEW_TYPE_STUDY_FLOW = 'study-flow-view';
 
@@ -931,18 +931,14 @@ class StudyFlowView extends ItemView {
         const statsEl = contentEl.createEl('div', { cls: 'reflection-stats' });
         if (this.plugin.currentSession) {
             const session = this.plugin.currentSession;
-            statsEl.innerHTML = `
-                <div class="stats-overview">
-                    <p>📊 Current Session Stats:</p>
-                    <ul>
-                        <li>⏱️ Duration: ${session.getDuration()} minutes</li>
-                        <li>🍅 Pomodoros: ${session.pomodorosCompleted}</li>
-                        <li>⚠️ Distractions: ${session.distractions.length}</li>
-                        <li>📝 Modified Files: ${session.modifiedFiles.size}</li>
-                        <li>✅ Completed Tasks: ${session.completedTasks.length}</li>
-                    </ul>
-                </div>
-            `;
+            const statsOverview = statsEl.createEl('div', { cls: 'stats-overview' });
+            statsOverview.createEl('p', { text: '📊 Current Session Stats:' });
+            const statsList = statsOverview.createEl('ul');
+            statsList.createEl('li', { text: `⏱️ Duration: ${session.getDuration()} minutes` });
+            statsList.createEl('li', { text: `🍅 Pomodoros: ${session.pomodorosCompleted}` });
+            statsList.createEl('li', { text: `⚠️ Distractions: ${session.distractions.length}` });
+            statsList.createEl('li', { text: `📝 Modified Files: ${session.modifiedFiles.size}` });
+            statsList.createEl('li', { text: `✅ Completed Tasks: ${session.completedTasks.length}` });
         }
 
         contentEl.createEl('p', { text: '💭 What are your thoughts on this study session so far?' });
@@ -1051,15 +1047,15 @@ class StudyFlowSettingTab extends PluginSettingTab {
             .addButton(button => button
                 .setButtonText('Add Tag')
                 .onClick(() => {
-                    let value = tagInput.components[0] as any;
-                    value = value?.inputEl?.value;
+                    const textComponent = tagInput.components[0] as TextComponent;
+                    let value = textComponent.getValue();
                     if (value) {
                         if (!value.startsWith('#')) {
                             value = '#' + value;
                         }
                         this.plugin.settings.tags.push(value);
                         this.plugin.saveSettings();
-                        (tagInput.components[0] as any).inputEl.value = '';
+                        textComponent.setValue('');
                         this.display();
                     }
                 }));
@@ -1085,12 +1081,12 @@ class StudyFlowSettingTab extends PluginSettingTab {
             .addButton(button => button
                 .setButtonText('Add Category')
                 .onClick(() => {
-                    let value = categoryInput.components[0] as any;
-                    value = value?.inputEl?.value;
+                    const textComponent = categoryInput.components[0] as TextComponent;
+                    const value = textComponent.getValue();
                     if (value && value !== '~Break~') {
                         this.plugin.settings.categories.push(value);
                         this.plugin.saveSettings();
-                        (categoryInput.components[0] as any).inputEl.value = '';
+                        textComponent.setValue('');
                         this.display();
                     }
                 }));
