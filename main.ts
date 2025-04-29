@@ -335,159 +335,95 @@ class StudyFlowView extends ItemView {
         const container = this.containerEl.children[1];
         container.empty();
 
-        // Daily Total Study Time Display
-        const dailyStatsContainer = container.createEl('div', {
-            cls: 'study-flow-daily-stats'
+        // Create elements using createEl
+        const dailyTimeEl = container.createEl('div', { cls: 'study-analytics-daily-time' });
+        this.dailyTimeDisplay = dailyTimeEl;
+
+        // Create timer display
+        this.timerDisplay = container.createEl('div', { 
+            cls: 'study-analytics-timer',
+            text: '25:00'
         });
-        this.dailyTimeDisplay = dailyStatsContainer.createEl('div', {
-            cls: 'study-flow-daily-time',
-            text: 'Today\'s Study Time: Loading...'
+
+        // Create end time display
+        this.endTimeDisplay = container.createEl('div', {
+            cls: 'study-analytics-end-time'
         });
 
-        // Initial update and regular updates
-        await this.updateDailyTime();
-        this.registerInterval(
-            window.setInterval(async () => await this.updateDailyTime(), 60000)
-        );
-
-        // Timer Display
-        this.timerDisplay = container.createEl('div', { cls: 'timer-display' });
-        this.endTimeDisplay = container.createEl('div', { cls: 'end-time-display' });
-        this.updateTimerDisplay();
-
-        // Stopwatch Toggle
-        const stopwatchDiv = container.createEl('div', { cls: 'stopwatch-section' });
-        this.stopwatchToggle = stopwatchDiv.createEl('button', {
-            text: 'Switch to Stopwatch',
-            cls: 'stopwatch-toggle'
+        // Create stopwatch toggle button
+        this.stopwatchToggle = container.createEl('button', {
+            cls: 'study-analytics-stopwatch-toggle',
+            text: 'Toggle Stopwatch Mode'
         });
-        this.stopwatchToggle.onclick = () => this.toggleStopwatchMode();
+        this.stopwatchToggle.addEventListener('click', () => this.toggleStopwatchMode());
 
-        // Controls
-        const controls = container.createEl('div', { cls: 'controls' });
-
-        // Start Button
-        this.startButton = controls.createEl('button', {
-            text: 'Start',
-            cls: 'control-button start-button'
+        // Create start button
+        this.startButton = container.createEl('button', {
+            cls: 'study-analytics-start',
+            text: 'Start'
         });
-        this.startButton.onclick = () => this.toggleTimer();
+        this.startButton.addEventListener('click', () => this.toggleTimer());
 
-        // New Session Button
-        const newSessionButton = controls.createEl('button', {
-            text: 'New Session',
-            cls: 'control-button new-session-button'
+        // Create category select
+        this.categorySelect = container.createEl('select', {
+            cls: 'study-analytics-category'
         });
-        newSessionButton.onclick = async () => {
-            if (this.plugin.currentSession) {
-                this.plugin.currentSession.notes = this.notesArea.value;
-                if (this.plugin.settings.showDifficulty) {
-                    this.plugin.currentSession.difficulty = parseInt(this.difficultySlider.value);
-                }
-                const sessionData = this.plugin.currentSession.end();
-                await this.plugin.saveSessionToFile(sessionData);
-            }
-
-            const category = this.categorySelect.value;
-            this.plugin.startNewSession(category);
-
-            // Reset input fields
-            this.notesArea.value = '';
-            this.distractionInput.value = '';
-            
-            // Always reset difficulty to 1 for new sessions
-            if (this.difficultySlider) {
-                this.difficultySlider.value = '1';
-            }
-            
-            // Optionally reset timer based on settings
-            if (this.plugin.settings.resetTimerOnNewSession) {
-                if (!this.isStopwatch) {
-                    this.timeLeft = this.plugin.settings.pomodoroTime * 60;
-                } else {
-                    this.stopwatchElapsed = 0;
-                    this.stopwatchStartTime = null;
-                }
-                
-                // If timer was running, restart it with the reset time
-                const wasRunning = this.isRunning;
-                if (wasRunning) {
-                    this.pauseTimer();
-                    this.startTimer();
-                }
-                
-                this.updateTimerDisplay();
-                new Notice('New session started - Timer reset');
-            } else {
-                new Notice('New session started - Timer continues');
-            }
-        };
-
-        // End Button
-        const endButton = controls.createEl('button', {
-            text: 'End',
-            cls: 'control-button end-button'
-        });
-        endButton.onclick = () => this.plugin.endCurrentSession();
-
-        // Category Selection
-        const categoryDiv = container.createEl('div', { cls: 'category-section' });
-        categoryDiv.createEl('label', { text: 'Category: ' });
-        this.categorySelect = categoryDiv.createEl('select');
-        this.categorySelect.onchange = () => {
-            // When selection changes, start a new session with the selected category
-            this.changeCategory(this.categorySelect.value);
-        };
         this.updateCategorySelect();
+        this.categorySelect.addEventListener('change', (e) => {
+            const target = e.target as HTMLSelectElement;
+            this.changeCategory(target.value);
+        });
 
-        // Difficulty Slider
+        // Create difficulty slider if enabled
         if (this.plugin.settings.showDifficulty) {
-            const difficultyDiv = container.createEl('div', { cls: 'difficulty-section' });
-            difficultyDiv.createEl('label', { text: 'Difficulty: ' });
-            this.difficultySlider = difficultyDiv.createEl('input', {
+            const difficultyContainer = container.createEl('div', {
+                cls: 'study-analytics-difficulty'
+            });
+            
+            difficultyContainer.createEl('label', {
+                text: 'Difficulty: '
+            });
+
+            this.difficultySlider = difficultyContainer.createEl('input', {
                 type: 'range',
+                cls: 'study-analytics-difficulty-slider',
                 attr: {
                     min: '1',
                     max: '5',
-                    value: '1'
-                },
-                cls: 'difficulty-slider'
+                    value: '3'
+                }
             });
         }
 
-        // Session Notes
-        const notesDiv = container.createEl('div', { cls: 'notes-section' });
-        notesDiv.createEl('label', { text: 'Session Notes:' });
-        this.notesArea = notesDiv.createEl('textarea', {
-            cls: 'notes-area',
-            attr: { rows: '4', placeholder: 'Enter session notes here...' }
-        });
-
-        // Add Reflection Note Button
-        const reflectionDiv = container.createEl('div', { cls: 'reflection-section' });
-        const reflectionButton = reflectionDiv.createEl('button', {
-            text: 'Add Reflection',
-            cls: 'reflection-button'
-        });
-        reflectionButton.onclick = () => this.addReflection();
-
-        // Distraction Reporter
-        const distractionDiv = container.createEl('div', { cls: 'distraction-section' });
-        const distractionButton = distractionDiv.createEl('button', {
-            text: 'Report Distraction',
-            cls: 'distraction-button'
-        });
-        this.distractionInput = distractionDiv.createEl('input', {
-            type: 'text',
+        // Create notes textarea
+        this.notesArea = container.createEl('textarea', {
+            cls: 'study-analytics-notes',
             attr: {
-                placeholder: 'What distracted you?'
-            },
-            cls: 'distraction-input'
+                placeholder: 'Session notes...'
+            }
         });
-        distractionButton.onclick = () => this.reportDistraction();
 
-        // Add styles
-        container.createEl('style').textContent = this.getStyles();
+        // Create distraction input
+        const distractionContainer = container.createEl('div', {
+            cls: 'study-analytics-distraction'
+        });
+
+        this.distractionInput = distractionContainer.createEl('input', {
+            type: 'text',
+            cls: 'study-analytics-distraction-input',
+            attr: {
+                placeholder: 'Record distraction...'
+            }
+        });
+
+        const reportButton = distractionContainer.createEl('button', {
+            text: 'Report',
+            cls: 'study-analytics-report-button'
+        });
+        reportButton.addEventListener('click', () => this.reportDistraction());
+
+        // Initial update
+        await this.updateDailyTime();
     }
 
     async updateDailyTime(): Promise<void> {
@@ -519,10 +455,10 @@ class StudyFlowView extends ItemView {
 
             const hours = Math.floor(totalMinutes / 60);
             const minutes = totalMinutes % 60;
-            this.dailyTimeDisplay.setText(`Today's Study Time: ${hours}h ${minutes}m`);
+            this.dailyTimeDisplay.textContent = `Today's Study Time: ${hours}h ${minutes}m`;
         } catch (error) {
             console.error('Error calculating total study time:', error);
-            this.dailyTimeDisplay.setText("Today's Study Time: Error");
+            this.dailyTimeDisplay.textContent = "Today's Study Time: Error";
         }
     }
 
@@ -928,22 +864,22 @@ class StudyFlowView extends ItemView {
 
         const contentEl = modal.contentEl;
 
-        const statsEl = contentEl.createEl('div', { cls: 'reflection-stats' });
-        if (this.plugin.currentSession) {
-            const session = this.plugin.currentSession;
-            statsEl.innerHTML = `
-                <div class="stats-overview">
-                    <p>📊 Current Session Stats:</p>
-                    <ul>
-                        <li>⏱️ Duration: ${session.getDuration()} minutes</li>
-                        <li>🍅 Pomodoros: ${session.pomodorosCompleted}</li>
-                        <li>⚠️ Distractions: ${session.distractions.length}</li>
-                        <li>📝 Modified Files: ${session.modifiedFiles.size}</li>
-                        <li>✅ Completed Tasks: ${session.completedTasks.length}</li>
-                    </ul>
-                </div>
-            `;
-        }
+        const statsEl = contentEl.createEl('div', { cls: 'study-analytics-stats' });
+        const statsHeader = statsEl.createEl('h3', { text: "Today's Statistics" });
+        
+        const statsList = statsEl.createEl('ul');
+        
+        const timeItem = statsList.createEl('li');
+        timeItem.createEl('span', { text: 'Total Study Time: ' });
+        timeItem.createEl('span', { text: `${hours}h ${minutes}m` });
+        
+        const pomodorosItem = statsList.createEl('li');
+        pomodorosItem.createEl('span', { text: 'Pomodoros Completed: ' });
+        pomodorosItem.createEl('span', { text: `${pomodoros}` });
+        
+        const tasksItem = statsList.createEl('li');
+        tasksItem.createEl('span', { text: 'Tasks Completed: ' });
+        tasksItem.createEl('span', { text: `${tasks}` });
 
         contentEl.createEl('p', { text: '💭 What are your thoughts on this study session so far?' });
 
@@ -1046,20 +982,16 @@ class StudyFlowSettingTab extends PluginSettingTab {
 
         const tagInput = new Setting(containerEl)
             .setName('Add new tag')
-            .addText(text => text
+            .addText((text: TextComponent) => text
                 .setPlaceholder('Add new tag'))
-            .addButton(button => button
+            .addButton((button: ButtonComponent) => button
                 .setButtonText('Add Tag')
                 .onClick(() => {
-                    let value = tagInput.components[0] as any;
-                    value = value?.inputEl?.value;
-                    if (value) {
-                        if (!value.startsWith('#')) {
-                            value = '#' + value;
-                        }
+                    const textComponent = tagInput.components[0] as TextComponent;
+                    const value = textComponent.getValue();
+                    if (value && !this.plugin.settings.tags.includes(value)) {
                         this.plugin.settings.tags.push(value);
                         this.plugin.saveSettings();
-                        (tagInput.components[0] as any).inputEl.value = '';
                         this.display();
                     }
                 }));
@@ -1080,17 +1012,17 @@ class StudyFlowSettingTab extends PluginSettingTab {
 
         const categoryInput = new Setting(containerEl)
             .setName('Add new category')
-            .addText(text => text
+            .addText((text: TextComponent) => text
                 .setPlaceholder('Add new category'))
-            .addButton(button => button
+            .addButton((button: ButtonComponent) => button
                 .setButtonText('Add Category')
                 .onClick(() => {
-                    let value = categoryInput.components[0] as any;
-                    value = value?.inputEl?.value;
+                    const textComponent = categoryInput.components[0] as TextComponent;
+                    const value = textComponent.getValue();
                     if (value && value !== '~Break~') {
                         this.plugin.settings.categories.push(value);
                         this.plugin.saveSettings();
-                        (categoryInput.components[0] as any).inputEl.value = '';
+                        textComponent.setValue('');
                         this.display();
                     }
                 }));
@@ -1577,7 +1509,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
         
         // Track opened files
         this.registerEvent(
-            this.app.workspace.on('file-open', (file) => {
+            this.app.workspace.on('file-open', (file: TFile | null) => {
                 if (this.currentSession && file && this.settings.trackOpenedFiles) {
                     // Always track files (if focusPath is empty, track all files)
                     const shouldTrack = !this.settings.focusPath || file.path.startsWith(this.settings.focusPath);
