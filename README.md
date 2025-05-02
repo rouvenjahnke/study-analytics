@@ -6,13 +6,23 @@ An Obsidian plugin that helps you manage your study sessions, track your habits,
 
 - **Pomodoro Timer**: Built-in timer with customizable work and break intervals
 - **Stopwatch Mode**: Track study time without predefined intervals
+- **Recurring Sessions**: Set daily or weekly time goals for different categories of study
 - **Session Tracking**: Record details about your study sessions including category, difficulty, and notes
 - **Distraction Management**: Easily record and analyze what distracts you during study sessions
 - **Line Notes**: Add contextual notes to specific lines in your notes while studying
 - **Daily Summaries**: Generate comprehensive reports of your daily study activity
+- **Weekly Summaries**: Get an overview of your entire week's study patterns and achievements
 - **Modified Files Tracking**: Automatically track which files you modify during study sessions
 - **Task Completion Tracking**: Record completed tasks during your sessions
 - **Reflection System**: Add reflections during or after study sessions to improve your process
+- **Compact Design**: Toggle a space-efficient interface ideal for smaller screens
+
+## What's New in 1.1.0
+
+- **Consolidated Storage**: All session data is now stored in a single JSON file, improving performance and reliability
+- **Recurring Sessions Improvements**: Fixed goal time tracking and interface updates for recurring session goals
+- **Compact Design Mode**: New space-efficient interface option that reduces UI elements size while maintaining functionality
+- **Button Label Optimization**: Streamlined button labels in compact mode for better space utilization
 
 ## Installation
 
@@ -46,9 +56,16 @@ An Obsidian plugin that helps you manage your study sessions, track your habits,
 - Record distractions as they occur to help identify patterns
 - Add reflections to capture insights about your study process
 
-### Daily Summary
+### Recurring Sessions
+- Set daily or weekly time goals for different study categories
+- Track your progress toward goals for each category
+- Get visual indicators when goals are achieved
+- Option to prorate weekly goals based on remaining days
+
+### Daily & Weekly Summary
 - Use the command palette and search for "Study Analytics: Create Daily Summary"
-- The plugin will generate a markdown file with a comprehensive summary of your day's study sessions
+- Generate weekly summaries to track longer-term progress
+- The plugin will generate markdown files with comprehensive summaries of your study activities
 
 ## Settings
 
@@ -57,6 +74,8 @@ You can customize various aspects of the plugin in the settings tab:
 - **Timer Settings**: Customize Pomodoro intervals and break durations
 - **Categories**: Add or remove study session categories
 - **Tags**: Manage the tags available for line notes
+- **Recurring Goals**: Set and manage time goals for different categories
+- **Interface Options**: Toggle compact design for space efficiency
 - **Other Settings**: Configure notes folder, auto-start options, and more
 
 ## Development
