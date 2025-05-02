@@ -44,6 +44,7 @@ interface StudyAnalyticsSettings {
     recurringSessionGoals: Record<string, RecurringGoal>; // Maps category names to goals
     prorateWeeklyGoals: boolean; // Divide weekly goals by days remaining in the week
     darkenReflectionBackground: boolean; // Darken the background when adding reflections
+    useCompactDesign: boolean; // Use a more compact design for the sidebar
 }
 
 const DEFAULT_SETTINGS: StudyAnalyticsSettings = {
@@ -80,6 +81,7 @@ const DEFAULT_SETTINGS: StudyAnalyticsSettings = {
     recurringSessionGoals: {}, // Maps category names to goals
     prorateWeeklyGoals: false, // Divide weekly goals by days remaining in the week
     darkenReflectionBackground: false, // Darken the background when adding reflections
+    useCompactDesign: false, // Use a more compact design for the sidebar
 };
 
 interface DistractionNote {
@@ -126,6 +128,12 @@ interface SessionData {
     pauseDuration: number;
     wordCount: number;
     createdLinks: string[]; // Links created during the session
+    id?: string; // Unique identifier for the session
+}
+
+interface SessionsData {
+    sessions: SessionData[];
+    lastUpdated: string;
 }
 
 class StudySession {
@@ -150,6 +158,7 @@ class StudySession {
     initialWordCounts: Map<string, number>;
     createdLinks: Set<string>;
     initialLinkCounts: Map<string, number>;
+    id: string;
 
     constructor(category: string) {
         this.category = category;
@@ -173,6 +182,7 @@ class StudySession {
         this.initialWordCounts = new Map<string, number>();
         this.createdLinks = new Set<string>();
         this.initialLinkCounts = new Map<string, number>();
+        this.id = crypto.randomUUID ? crypto.randomUUID() : `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     }
 
     pause(): void {
@@ -293,7 +303,8 @@ class StudySession {
             isBreak: this.isBreak,
             pauseDuration: Math.round(this.totalPauseDuration / 60000),
             wordCount: this.wordCount,
-            createdLinks: Array.from(this.createdLinks)
+            createdLinks: Array.from(this.createdLinks),
+            id: this.id
         };
     }
 }
@@ -375,8 +386,17 @@ class StudyFlowView extends ItemView {
 
         // Stopwatch Toggle
         const stopwatchDiv = container.createEl('div', { cls: 'stopwatch-section' });
+        let toggleText = 'Switch to Stopwatch';
+        
+        if (this.isStopwatch) {
+            toggleText = this.plugin.settings.useCompactDesign ? 
+                'Switch to Rec. Sess.' : 'Switch to Recurring Sessions';
+        } else if (this.isRecurringSession) {
+            toggleText = 'Switch to Pomodoro';
+        }
+        
         this.stopwatchToggle = stopwatchDiv.createEl('button', {
-            text: this.isStopwatch ? 'Switch to Pomodoro' : (this.isRecurringSession ? 'Switch to Stopwatch' : 'Switch to Stopwatch'),
+            text: toggleText,
             cls: 'stopwatch-toggle'
         });
         this.stopwatchToggle.onclick = () => this.toggleTimerMode();
@@ -393,7 +413,7 @@ class StudyFlowView extends ItemView {
 
         // New Session Button
         const newSessionButton = controls.createEl('button', {
-            text: 'New Session',
+            text: this.plugin.settings.useCompactDesign ? 'New' : 'New Session',
             cls: 'control-button new-session-button'
         });
         newSessionButton.onclick = async () => {
@@ -517,28 +537,19 @@ class StudyFlowView extends ItemView {
     }
 
     async updateDailyTime(): Promise<void> {
-        const today = new Date().toLocaleDateString();
+        const today = new Date().toISOString().split('T')[0];
         let totalMinutes = 0;
-        const tempFolderPath = `${this.plugin.settings.notesFolder}/temp`;
 
         try {
-            // Read temporary JSON files
-            if (await this.app.vault.adapter.exists(tempFolderPath)) {
-                const tempFiles = await this.app.vault.adapter.list(tempFolderPath);
-
-                for (const file of tempFiles.files) {
-                    const content = await this.app.vault.adapter.read(file);
-                    const sessionData = JSON.parse(content);
-
-                    // Check if the session is from today and NOT a break
-                    const sessionDate = new Date(sessionData.startTime).toLocaleDateString();
-                    if (sessionDate === today && !sessionData.isBreak) {
-                        totalMinutes += sessionData.duration;
-                    }
+            // Lese Sitzungsdaten aus der konsolidierten Speicherung
+            this.plugin.sessionsData.sessions.forEach(session => {
+                // Überprüfe, ob die Sitzung von heute ist und KEINE Pause
+                if (session.date === today && !session.isBreak) {
+                    totalMinutes += session.duration;
                 }
-            }
+            });
 
-            // Add the time of the current session, if it's not a break
+            // Füge die Zeit der aktuellen Sitzung hinzu, wenn es keine Pause ist
             if (this.plugin.currentSession && !this.plugin.currentSession.isBreak) {
                 totalMinutes += this.plugin.currentSession.getDuration();
             }
@@ -676,35 +687,26 @@ class StudyFlowView extends ItemView {
     // Helper function to get study time per category for a specific date
     async getCategoryTimes(date: string): Promise<Record<string, number>> {
         const categoryTimes: Record<string, number> = {};
-        const tempFolderPath = `${this.plugin.settings.notesFolder}/temp`;
         
         try {
-            // Only proceed if temp folder exists
-            if (await this.app.vault.adapter.exists(tempFolderPath)) {
-                const tempFiles = await this.app.vault.adapter.list(tempFolderPath);
-                
-                for (const file of tempFiles.files) {
-                    const content = await this.app.vault.adapter.read(file);
-                    const sessionData = JSON.parse(content) as SessionData;
-                    
-                    // Only include sessions from the specified date and not breaks
-                    const sessionDate = new Date(sessionData.startTime).toLocaleDateString();
-                    if (sessionDate === date && !sessionData.isBreak) {
-                        // Initialize category if needed
-                        if (!categoryTimes[sessionData.category]) {
-                            categoryTimes[sessionData.category] = 0;
-                        }
-                        
-                        // Add duration (converting minutes to hours)
-                        categoryTimes[sessionData.category] += sessionData.duration / 60;
+            // Lese Sitzungsdaten aus der konsolidierten Speicherung
+            this.plugin.sessionsData.sessions.forEach(session => {
+                // Überprüfe, ob die Sitzung vom angegebenen Datum ist und keine Pause
+                if (session.date === date && !session.isBreak) {
+                    // Initialisiere Kategorie, falls nötig
+                    if (!categoryTimes[session.category]) {
+                        categoryTimes[session.category] = 0;
                     }
+                    
+                    // Füge die Dauer hinzu (Umrechnung von Minuten in Stunden)
+                    categoryTimes[session.category] += session.duration / 60;
                 }
-            }
+            });
             
-            // Add the time of the current session, if it's not a break
+            // Füge die Zeit der aktuellen Sitzung hinzu, wenn es keine Pause ist
             if (this.plugin.currentSession && !this.plugin.currentSession.isBreak) {
                 const category = this.plugin.currentSession.category;
-                const duration = this.plugin.currentSession.getDuration() / 60; // Convert minutes to hours
+                const duration = this.plugin.currentSession.getDuration() / 60; // Umrechnung von Minuten in Stunden
                 
                 if (!categoryTimes[category]) {
                     categoryTimes[category] = 0;
@@ -713,16 +715,15 @@ class StudyFlowView extends ItemView {
                 categoryTimes[category] += duration;
             }
             
-            // For categories with recurring goals, add the timeSpent value
+            // Für Kategorien mit wiederkehrenden Zielen den timeSpent-Wert hinzufügen
             Object.entries(this.plugin.settings.recurringSessionGoals).forEach(([category, goal]) => {
-                // For weekly goals, ensure we're including the timeSpent value (which is stored separately)
+                // Für wöchentliche Ziele sicherstellen, dass wir den timeSpent-Wert miteinbeziehen
                 if (goal.period === 'weekly' && goal.timeSpent && goal.timeSpent > 0) {
                     if (!categoryTimes[category]) {
                         categoryTimes[category] = 0;
                     }
                     
-                    // We don't need to add timeSpent here since it's already tracked in the goal itself
-                    // and is used directly for the remaining calculation
+                    // Wir müssen timeSpent hier nicht hinzufügen, da es bereits separat im Ziel selbst verfolgt wird
                 }
             });
         } catch (error) {
@@ -737,10 +738,118 @@ class StudyFlowView extends ItemView {
             /* Main container styling */
             .study-flow-daily-stats {
                 background: var(--background-secondary-alt);
-                padding: 12px;
+                padding: 8px;
                 border-radius: 8px;
-                margin: 12px 12px 16px;
+                margin: 8px 8px 12px;
                 box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            }
+            
+            .study-flow-daily-time {
+                color: var(--text-normal);
+                font-size: 0.9em;
+            }
+            
+            .daily-time-total {
+                font-size: 1em;
+                font-weight: 600;
+                margin-bottom: 8px;
+                color: var(--text-accent);
+                padding-bottom: 6px;
+                border-bottom: 1px solid var(--background-modifier-border);
+            }
+            
+            /* Compact design styles */
+            .study-analytics-compact .study-flow-daily-stats {
+                padding: 3px;
+                margin: 3px 3px 5px;
+            }
+            
+            .study-analytics-compact .timer-display {
+                font-size: 1.8em;
+                margin: 3px 0 0;
+            }
+            
+            .study-analytics-compact .end-time-display {
+                margin: 0 0 3px;
+                font-size: 0.65em;
+            }
+            
+            .study-analytics-compact .controls {
+                margin: 3px;
+                gap: 3px;
+            }
+            
+            .study-analytics-compact .control-button {
+                padding: 3px 6px;
+                min-width: 50px;
+                width: 100%;
+                max-width: 110px;
+                font-size: 0.8em;
+            }
+            
+            .study-analytics-compact .category-section, 
+            .study-analytics-compact .difficulty-section, 
+            .study-analytics-compact .reflection-section, 
+            .study-analytics-compact .distraction-section, 
+            .study-analytics-compact .notes-section {
+                margin: 3px;
+                padding: 3px;
+            }
+            
+            .study-analytics-compact .notes-area {
+                min-height: 30px;
+                font-size: 0.8em;
+            }
+            
+            .study-analytics-compact .goal-row {
+                margin: 0;
+                padding: 0;
+                font-size: 0.75em;
+            }
+            
+            .study-analytics-compact .goals-heading {
+                font-size: 0.75em;
+                margin-bottom: 2px;
+            }
+            
+            .study-analytics-compact .stopwatch-section {
+                margin: 3px 0 4px;
+            }
+            
+            .study-analytics-compact .stopwatch-toggle {
+                padding: 2px 5px;
+                font-size: 0.75em;
+                width: 100%;
+                max-width: 110px;
+            }
+            
+            .study-analytics-compact select,
+            .study-analytics-compact .category-section label,
+            .study-analytics-compact .difficulty-section label,
+            .study-analytics-compact .notes-section label {
+                font-size: 0.8em;
+            }
+            
+            .study-analytics-compact .recurring-goals-container {
+                font-size: 0.7em;
+                margin-top: 3px;
+                padding: 3px;
+            }
+            
+            .study-analytics-compact .goal-remaining,
+            .study-analytics-compact .goal-complete {
+                font-size: 0.75em;
+            }
+            
+            .study-analytics-compact .reflection-button,
+            .study-analytics-compact .distraction-button {
+                font-size: 0.8em;
+                padding: 3px;
+            }
+            
+            .study-analytics-compact .distraction-input {
+                font-size: 0.8em;
+                padding: 3px;
             }
             
             /* Reflection modal enhancement */
@@ -815,10 +924,10 @@ class StudyFlowView extends ItemView {
             
             /* Goals section styling */
             .recurring-goals-container {
-                font-size: 0.85em;
+                font-size: 0.8em;
                 text-align: left;
-                margin-top: 8px;
-                padding: 10px;
+                margin-top: 6px;
+                padding: 6px;
                 background: var(--background-primary);
                 border-radius: 6px;
                 border: 1px solid var(--background-modifier-border);
@@ -826,7 +935,7 @@ class StudyFlowView extends ItemView {
             
             .goals-heading {
                 font-weight: 600;
-                margin-bottom: 8px;
+                margin-bottom: 5px;
                 text-align: center;
                 color: var(--text-accent);
                 font-size: 0.9em;
@@ -837,38 +946,35 @@ class StudyFlowView extends ItemView {
             .goal-row {
                 display: flex;
                 justify-content: space-between;
-                margin: 3px 0;
-                padding: 3px 0;
+                margin: 2px 0;
+                padding: 1px 0;
                 border-bottom: 1px dotted var(--background-modifier-border);
-            }
-            
-            .goal-row:last-child {
-                border-bottom: none;
             }
             
             .goal-category {
                 font-weight: 500;
                 color: var(--text-normal);
+                font-size: 0.95em;
             }
             
             .goal-remaining {
                 color: var(--text-muted);
                 font-family: var(--font-monospace);
-                font-size: 0.9em;
+                font-size: 0.85em;
             }
             
             .goal-complete {
                 color: var(--text-accent);
                 font-weight: 500;
                 font-family: var(--font-monospace);
-                font-size: 0.9em;
+                font-size: 0.85em;
             }
 
             /* Timer display styling */
             .timer-display {
-                font-size: 3.2em;
+                font-size: 2.8em;
                 text-align: center;
-                margin: 16px 0 4px;
+                margin: 12px 0 2px;
                 font-family: var(--font-monospace);
                 font-weight: 300;
                 color: var(--text-normal);
@@ -876,8 +982,8 @@ class StudyFlowView extends ItemView {
             
             .end-time-display {
                 text-align: center;
-                margin: 0 0 16px;
-                font-size: 0.85em;
+                margin: 0 0 12px;
+                font-size: 0.8em;
                 color: var(--text-muted);
                 font-style: italic;
             }
@@ -885,36 +991,33 @@ class StudyFlowView extends ItemView {
             /* Button styling */
             .stopwatch-section {
                 text-align: center;
-                margin: 8px 0 16px;
+                margin: 6px 0 12px;
             }
             
             .stopwatch-toggle {
-                padding: 6px 12px;
+                padding: 5px 10px;
                 border-radius: 4px;
                 background-color: var(--background-secondary);
                 border: 1px solid var(--background-modifier-border);
                 color: var(--text-normal);
-                font-size: 0.9em;
+                font-size: 0.85em;
                 transition: all 0.2s ease;
-            }
-            
-            .stopwatch-toggle:hover {
-                background-color: var(--background-modifier-hover);
             }
             
             .controls {
                 text-align: center;
-                margin: 12px 16px 20px;
+                margin: 10px 12px 15px;
                 display: flex;
                 justify-content: center;
-                gap: 12px;
+                gap: 8px;
             }
             
             .control-button {
-                padding: 8px 16px;
-                min-width: 90px;
+                padding: 6px 12px;
+                min-width: 80px;
                 border-radius: 4px;
                 font-weight: 500;
+                font-size: 0.9em;
                 border: 1px solid var(--background-modifier-border);
                 background-color: var(--background-secondary);
                 color: var(--text-normal);
@@ -951,8 +1054,8 @@ class StudyFlowView extends ItemView {
             .reflection-section, 
             .distraction-section, 
             .notes-section {
-                margin: 16px 12px;
-                padding: 10px;
+                margin: 12px 10px;
+                padding: 8px;
                 background: var(--background-secondary-alt);
                 border-radius: 6px;
                 border: 1px solid var(--background-modifier-border);
@@ -1034,6 +1137,28 @@ class StudyFlowView extends ItemView {
                 margin-bottom: 12px;
                 opacity: 0.5;
             }
+            
+            .study-analytics-compact .recurring-goals-container {
+                font-size: 0.85em;
+                margin-top: 5px;
+                padding: 5px;
+            }
+            
+            .study-analytics-compact .goal-row {
+                margin: 2px 0;
+                padding: 1px 0;
+                font-size: 0.85em;
+            }
+            
+            .study-analytics-compact .goals-heading {
+                font-size: 0.85em;
+                margin-bottom: 4px;
+            }
+            
+            .study-analytics-compact .goal-remaining,
+            .study-analytics-compact .goal-complete {
+                font-size: 0.8em;
+            }
         `;
     }
 
@@ -1065,28 +1190,28 @@ class StudyFlowView extends ItemView {
             this.timerDisplay.textContent = display;
             this.endTimeDisplay.textContent = '';
         } else if (this.isRecurringSession) {
-            // For recurring sessions, we display time remaining to goal
+            // Für Recurring Sessions, zeige die Zeit an, die bis zum Ziel verbleibt
             const category = this.categorySelect.value;
             const goal = this.plugin.settings.recurringSessionGoals[category];
             
             if (goal) {
-                // Calculate minutes and seconds from goalTimeRemaining, making sure to use integers
+                // Berechne Minuten und Sekunden aus goalTimeRemaining (als Integer)
                 const totalSeconds = Math.floor(this.goalTimeRemaining);
                 const minutes = Math.floor(totalSeconds / 60);
                 const seconds = Math.floor(totalSeconds % 60);
                 const display = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
                 this.timerDisplay.textContent = display;
                 
-                // Calculate total goal time in hours and minutes for display
-                // Interpret goal value as hours, not minutes
-                const goalHours = goal.timeGoal;
-                const goalMinutes = 0;
+                // Berechne die gesamte Zielzeit in Stunden und Minuten für die Anzeige
+                // Zielwert ist in Stunden
+                const goalHours = Math.floor(goal.timeGoal);
+                const goalMinutes = Math.floor((goal.timeGoal - goalHours) * 60);
                 const goalTimeDisplay = `${goalHours}h ${goalMinutes}m`;
                 
-                // Show period (daily/weekly) and total goal time
-                let endDisplay = `${goal.period.charAt(0).toUpperCase() + goal.period.slice(1)} Goal (${goalTimeDisplay})`;
+                // Zeige Periode (täglich/wöchentlich) und Gesamtzielzeit an
+                let endDisplay = `${goal.period === 'daily' ? 'Daily' : 'Weekly'} Goal (${goalTimeDisplay})`;
                 
-                // Add end time if timer is running
+                // Füge Endzeit hinzu, wenn der Timer läuft
                 if (this.isRunning) {
                     const endTime = new Date(Date.now() + (totalSeconds * 1000));
                     const endTimeStr = endTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -1122,14 +1247,12 @@ class StudyFlowView extends ItemView {
         if (this.isStopwatch) {
             this.stopwatchElapsed = 0;
         } else if (this.isRecurringSession) {
-            // For recurring sessions, set the goal time remaining based on the current category
+            // Für Recurring Sessions, setze die goalTimeRemaining auf das volle Ziel (ohne bisherige Zeit)
             const category = this.categorySelect?.value;
             if (category && this.plugin.settings.recurringSessionGoals[category]) {
                 const goal = this.plugin.settings.recurringSessionGoals[category];
-                // Calculate remaining time in seconds (goal is in hours)
-                const timeSpent = goal.timeSpent || 0;
-                // Convert goal (hours) to seconds and subtract time already spent (in seconds)
-                this.goalTimeRemaining = Math.max(0, Math.floor((goal.timeGoal * 3600) - (timeSpent * 3600)));
+                // Setze auf die volle Zielzeit in Sekunden (goal.timeGoal ist in Stunden)
+                this.goalTimeRemaining = Math.floor(goal.timeGoal * 3600);
             } else {
                 this.goalTimeRemaining = 0;
             }
@@ -1192,6 +1315,30 @@ class StudyFlowView extends ItemView {
             const isStopwatchBackup = this.isStopwatch;
             const isRecurringSessionBackup = this.isRecurringSession;
             
+            // Wenn wir im Recurring-Session-Modus sind, aktualisiere die Zeit für die aktuelle Kategorie
+            if (isRecurringSessionBackup && !this.plugin.currentSession.isBreak) {
+                const category = this.plugin.currentSession.category;
+                const sessionDuration = this.plugin.currentSession.getDuration() / 60; // Minuten zu Stunden
+                
+                // Wenn es ein Ziel für diese Kategorie gibt, aktualisiere den Fortschritt
+                if (this.plugin.settings.recurringSessionGoals[category]) {
+                    const goal = this.plugin.settings.recurringSessionGoals[category];
+                    if (!goal.timeSpent) goal.timeSpent = 0;
+                    
+                    // Zeit hinzufügen
+                    goal.timeSpent += sessionDuration;
+                    
+                    // Prüfen, ob das Ziel erreicht wurde
+                    if (!goal.achieved && goal.timeSpent >= goal.timeGoal) {
+                        goal.achieved = true;
+                        new Notice(`Ziel für ${category} erreicht!`);
+                    }
+                    
+                    // Einstellungen speichern
+                    this.plugin.saveSettings();
+                }
+            }
+            
             if (wasRunning) {
                 this.pauseTimer();
             }
@@ -1223,20 +1370,16 @@ class StudyFlowView extends ItemView {
                 // Recalculate goal time remaining for the new category
                 if (this.plugin.settings.recurringSessionGoals[newCategory]) {
                     const goal = this.plugin.settings.recurringSessionGoals[newCategory];
-                    // Calculate remaining time in seconds (goal is in hours)
-                    // Use timeSpent directly rather than calculating it
-                    const timeSpent = goal.timeSpent || 0;
-                    
-                    // Convert goal (hours) to seconds and subtract time already spent (in seconds)
-                    this.goalTimeRemaining = Math.max(0, Math.floor((goal.timeGoal * 3600) - (timeSpent * 3600)));
-            } else {
+                    // Setze immer auf die volle Zielzeit, nicht die verbleibende
+                    this.goalTimeRemaining = Math.floor(goal.timeGoal * 3600);
+                } else {
                     this.goalTimeRemaining = 0;
                 }
                 
-                // Make sure to update the timer display to reflect the new goal time
+                // Sofort die Timerdarstellung aktualisieren
                 this.updateTimerDisplay();
                 
-                // Update goal display as well
+                // Sofort die Zielanzeige aktualisieren
                 this.updateDailyTime();
             } else {
                 this.isStopwatch = false;
@@ -1277,17 +1420,14 @@ class StudyFlowView extends ItemView {
         } else if (this.isRecurringSession) {
             // Start the recurring session countdown timer
             if (!this.interval) {
-                // Check if we need to recalculate the goalTimeRemaining
+                // Prüfe, ob wir die goalTimeRemaining neu berechnen müssen
                 const category = this.categorySelect.value;
                 if (category && this.plugin.settings.recurringSessionGoals[category]) {
-                    const goal = this.plugin.settings.recurringSessionGoals[category];
-                    // Make sure we have the most up-to-date time remaining based on goal and spent time
-                    const timeSpent = goal.timeSpent || 0;
-                    const calculatedTimeRemaining = Math.max(0, Math.floor((goal.timeGoal * 3600) - (timeSpent * 3600)));
-                    
-                    // Only update if there's a significant difference (more than 2 seconds)
-                    if (Math.abs(calculatedTimeRemaining - this.goalTimeRemaining) > 2) {
-                        this.goalTimeRemaining = calculatedTimeRemaining;
+                    // Wenn wir eine Session neu starten, müssen wir mit der vollen Zielzeit beginnen
+                    if (this.timerStartTime === null) {
+                        // Setze auf die volle Zielzeit
+                        const goal = this.plugin.settings.recurringSessionGoals[category];
+                        this.goalTimeRemaining = Math.floor(goal.timeGoal * 3600);
                     }
                 }
                 
@@ -1314,32 +1454,11 @@ class StudyFlowView extends ItemView {
                     this.updateTimerDisplay();
                     
                     // Only update daily time and goal progress every 60 seconds to avoid excessive calculations
-                    if (Math.floor(this.goalTimeRemaining) % 60 === 0) {
+                    if (Math.floor(this.goalTimeRemaining) % 60 === 0 || this.goalTimeRemaining <= 0) {
                         this.updateDailyTime();
                         
-                        // Update the current category's goal progress
-                        const category = this.categorySelect.value;
-                        if (category && this.plugin.settings.recurringSessionGoals[category]) {
-                            const goal = this.plugin.settings.recurringSessionGoals[category];
-                            if (!goal.timeSpent) goal.timeSpent = 0;
-                            
-                            // Save previous status to determine if we just achieved the goal
-                            const wasAchieved = goal.achieved;
-                            
-                            // Calculate time spent based on goal time reduction
-                            const initialGoalSeconds = goal.timeGoal * 3600;
-                            const secondsSpent = initialGoalSeconds - this.goalTimeRemaining;
-                            goal.timeSpent = secondsSpent / 3600; // Convert to hours
-                            
-                            // Check if goal is achieved only if it wasn't already achieved before
-                            if (!wasAchieved && goal.timeSpent >= goal.timeGoal) {
-                                goal.achieved = true;
-                                new Notice(`Goal achieved for ${category}!`);
-                            }
-                            
-                            // Save the updated goal
-                            this.plugin.saveSettings();
-                        }
+                        // Wir aktualisieren hier NICHT goal.timeSpent, da wir dies später beim Beenden der
+                        // Session tun. Das hilft, inkorrektes Addieren der Zeit zu vermeiden.
                     }
                     
                     // Check if timer has reached zero
@@ -1349,8 +1468,8 @@ class StudyFlowView extends ItemView {
                         // Only show completion message if the goal was actually achieved during this session
                         // and wasn't already displayed
                         const goal = this.plugin.settings.recurringSessionGoals[category];
-                        if (goal && goal.timeSpent && goal.timeSpent >= goal.timeGoal && !goal.achieved) {
-                            new Notice(`Goal for ${category} completed!`);
+                        if (goal && !goal.achieved) {
+                            new Notice(`Ziel für ${category} erreicht!`);
                             goal.achieved = true;
                             this.plugin.saveSettings();
                         }
@@ -1596,13 +1715,20 @@ class StudyFlowView extends ItemView {
             // Pomodoro -> Stopwatch
             this.isStopwatch = true;
             this.isRecurringSession = false;
-            this.stopwatchToggle.textContent = 'Switch to Recurring Sessions';
+            this.stopwatchToggle.textContent = this.plugin.settings.useCompactDesign ? 
+                'Switch to Rec. Sess.' : 'Switch to Recurring Sessions';
         } else if (this.isStopwatch && !this.isRecurringSession) {
             // Stopwatch -> Recurring Sessions (only if enabled in settings)
             if (this.plugin.settings.enableRecurringSessions) {
                 this.isStopwatch = false;
                 this.isRecurringSession = true;
                 this.stopwatchToggle.textContent = 'Switch to Pomodoro';
+                
+                // Beim Wechsel in den Recurring-Sessions-Modus, setze die volle Zielzeit für die aktuelle Kategorie
+                if (this.plugin.settings.recurringSessionGoals[currentCategory]) {
+                    const goal = this.plugin.settings.recurringSessionGoals[currentCategory];
+                    this.goalTimeRemaining = Math.floor(goal.timeGoal * 3600);
+                }
             } else {
                 // If recurring sessions disabled, go directly to Pomodoro
                 this.isStopwatch = false;
@@ -1625,6 +1751,7 @@ class StudyFlowView extends ItemView {
             if (this.isRecurringSession) {
                 // If in recurring sessions mode, update goal display
                 this.updateDailyTime();
+                this.updateTimerDisplay(); // Aktualisiere auch die Timer-Anzeige
             }
         }
     }
@@ -1809,6 +1936,21 @@ class StudyFlowSettingTab extends PluginSettingTab {
                 .onChange(async (value) => {
                     this.plugin.settings.darkenReflectionBackground = value;
                     await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Use compact design')
+            .setDesc('Makes the sidebar view more compact to save screen space')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.useCompactDesign)
+                .onChange(async (value) => {
+                    this.plugin.settings.useCompactDesign = value;
+                    await this.plugin.saveSettings();
+                    // Aktualisiere die Ansicht sofort
+                    const view = this.plugin.getStudyFlowView();
+                    if (view) {
+                        view.containerEl.classList.toggle('study-analytics-compact', value);
+                    }
                 }));
 
         new Setting(containerEl)
@@ -2206,10 +2348,24 @@ export default class StudyAnalyticsPlugin extends Plugin {
     settings: StudyAnalyticsSettings;
     currentSession: StudySession | null = null;
     statusBarItem: HTMLElement;
+    sessionsData: SessionsData = { sessions: [], lastUpdated: new Date().toISOString() };
+    sessionsFilePath: string = '';
 
     async onload() {
         // Load settings
         await this.loadSettings();
+        
+        // Set up sessions file path
+        this.sessionsFilePath = `${this.settings.notesFolder}/study_sessions_data.json`;
+        
+        // Load existing sessions data
+        await this.loadSessionsData();
+        
+        // Migrate any existing temp files to consolidated storage
+        await this.migrateTempFilesToConsolidated();
+        
+        // Show a notice about the storage change
+        new Notice("Study Analytics now uses consolidated storage for all sessions");
 
         // Register view
         this.registerView(
@@ -2445,6 +2601,30 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 if (this.settings.showDifficulty) {
                     this.currentSession.difficulty = parseInt(view.difficultySlider.value);
                 }
+
+                // Wenn wir im Recurring-Sessions-Modus sind, aktualisiere die Zielzeit der Kategorie
+                if (view.isRecurringSession && !this.currentSession.isBreak) {
+                    const category = this.currentSession.category;
+                    const sessionDuration = this.currentSession.getDuration() / 60; // Minuten zu Stunden
+                    
+                    // Wenn es ein Ziel für diese Kategorie gibt, aktualisiere den Fortschritt
+                    if (this.settings.recurringSessionGoals[category]) {
+                        const goal = this.settings.recurringSessionGoals[category];
+                        if (!goal.timeSpent) goal.timeSpent = 0;
+                        
+                        // Zeit hinzufügen
+                        goal.timeSpent += sessionDuration;
+                        
+                        // Prüfen, ob das Ziel erreicht wurde
+                        if (!goal.achieved && goal.timeSpent >= goal.timeGoal) {
+                            goal.achieved = true;
+                            new Notice(`Ziel für ${category} erreicht!`);
+                        }
+                        
+                        // Einstellungen speichern
+                        await this.saveSettings();
+                    }
+                }
             }
 
             const sessionData = this.currentSession.end();
@@ -2453,6 +2633,8 @@ export default class StudyAnalyticsPlugin extends Plugin {
 
             if (view) {
                 view.resetSession();
+                // Aktualisiere die Zielanzeige, nachdem die Session beendet wurde
+                view.updateDailyTime();
             }
 
             new Notice('Session ended and saved');
@@ -2460,34 +2642,48 @@ export default class StudyAnalyticsPlugin extends Plugin {
     }
 
     async saveSessionToFile(sessionData: SessionData) {
-        const tempFileName = `temp_${new Date().getTime()}.json`;
-        const tempFolderPath = `${this.settings.notesFolder}/temp`;
-
-        if (!(await this.app.vault.adapter.exists(tempFolderPath))) {
-            await this.app.vault.createFolder(tempFolderPath);
+        try {
+            // Ensure the sessions folder exists
+            if (!(await this.app.vault.adapter.exists(this.settings.notesFolder))) {
+                await this.app.vault.createFolder(this.settings.notesFolder);
+            }
+            
+            // Add the session to our sessions data array
+            this.sessionsData.sessions.push(sessionData);
+            this.sessionsData.lastUpdated = new Date().toISOString();
+            
+            // Save the updated sessions data to the file
+            await this.saveSessionsData();
+        } catch (error) {
+            console.error("Error saving session:", error);
+            new Notice("Error saving session data");
         }
-
-        await this.app.vault.adapter.write(
-            `${tempFolderPath}/${tempFileName}`,
-            JSON.stringify(sessionData, null, 2)
-        );
     }
 
     async createDailySummary(date?: string) {
         const summaryDate = date || new Date().toISOString().split('T')[0];
-        const tempFolderPath = `${this.settings.notesFolder}/temp`;
         const summaryFileName = `${summaryDate}_daily_summary.md`;
         const summaryFilePath = `${this.settings.notesFolder}/${summaryFileName}`;
         let studySessions: SessionData[] = [];
         let breakSessions: SessionData[] = [];
 
         try {
-            if (!(await this.app.vault.adapter.exists(tempFolderPath))) {
-                new Notice('No study sessions found for the specified date');
+            // Filter sessions from the specified date
+            this.sessionsData.sessions.forEach(session => {
+                if (session.date === summaryDate) {
+                    if (session.isBreak) {
+                        breakSessions.push(session);
+                    } else {
+                        studySessions.push(session);
+                    }
+                }
+            });
+            
+            if (studySessions.length === 0) {
+                new Notice(`No study sessions found for ${summaryDate}`);
                 return null;
             }
             
-            const tempFiles = await this.app.vault.adapter.list(tempFolderPath);
             let totalStudyTime = 0;
             let totalBreakTime = 0;
             let totalPomodoros = 0;
@@ -2502,39 +2698,26 @@ export default class StudyAnalyticsPlugin extends Plugin {
             let totalCreatedLinks = 0;
             const difficulties: number[] = [];
 
-            // Collect data from all temporary files for the specified date
-            for (const file of tempFiles.files) {
-                const content = await this.app.vault.adapter.read(file);
-                const sessionData = JSON.parse(content) as SessionData;
-                
-                // Only include sessions from the specified date
-                if (sessionData.date === summaryDate) {
-                    if (sessionData.isBreak) {
-                        breakSessions.push(sessionData);
-                        totalBreakTime += sessionData.duration;
-                    } else {
-                        studySessions.push(sessionData);
-                        totalStudyTime += sessionData.duration;
-                        totalPomodoros += sessionData.pomodoros;
-                        totalDistractions += sessionData.distractions.length;
-                        sessionData.modifiedFiles.forEach(f => modifiedFiles.add(f));
-                        sessionData.openedFiles?.forEach(f => openedFiles.add(f));
-                        sessionData.createdFiles?.forEach(f => createdFiles.add(f));
-                        sessionData.createdLinks?.forEach(l => createdLinks.add(l));
-                        totalTasks += sessionData.completedTasks.length;
-                        difficulties.push(sessionData.difficulty);
-                        totalWordCount += sessionData.wordCount || 0;
-                    }
-                }
-            }
+            // Collect data from all sessions for the specified date
+            studySessions.forEach(session => {
+                totalStudyTime += session.duration;
+                totalPomodoros += session.pomodoros;
+                totalDistractions += session.distractions.length;
+                session.modifiedFiles.forEach(f => modifiedFiles.add(f));
+                session.openedFiles?.forEach(f => openedFiles.add(f));
+                session.createdFiles?.forEach(f => createdFiles.add(f));
+                session.createdLinks?.forEach(l => createdLinks.add(l));
+                totalTasks += session.completedTasks.length;
+                difficulties.push(session.difficulty);
+                totalWordCount += session.wordCount || 0;
+            });
+            
+            breakSessions.forEach(session => {
+                totalBreakTime += session.duration;
+            });
             
             totalCreatedFiles = createdFiles.size;
             totalCreatedLinks = createdLinks.size;
-            
-            if (studySessions.length === 0) {
-                new Notice(`No study sessions found for ${summaryDate}`);
-                return null;
-            }
 
             const avgDifficulty = difficulties.length > 0
                 ? (difficulties.reduce((a, b) => a + b) / difficulties.length).toFixed(1)
@@ -2745,31 +2928,22 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 }
             }
 
-            // Save the summary if requested
-            if (this.settings.createDailySummary || !date) {
-                if (!(await this.app.vault.adapter.exists(this.settings.notesFolder))) {
-                    await this.app.vault.createFolder(this.settings.notesFolder);
-                }
-                
-                await this.app.vault.create(summaryFilePath, summaryContent);
-                
-                if (!date && !this.settings.preserveTempFiles && !this.settings.keepLongTermData) {
-                    // Only delete temp files if:
-                    // 1. We're creating a summary for today, and
-                    // 2. preserveTempFiles setting is OFF, and
-                    // 3. keepLongTermData setting is OFF
-                    for (const file of tempFiles.files) {
-                        const content = await this.app.vault.adapter.read(file);
-                        const sessionData = JSON.parse(content) as SessionData;
-                        if (sessionData.date === summaryDate) {
-                            await this.app.vault.adapter.remove(file);
-                        }
-                    }
-                }
-                
-                new Notice('Daily summary created successfully!');
+            // Write the summary to the file
+            if (!(await this.app.vault.adapter.exists(this.settings.notesFolder))) {
+                await this.app.vault.createFolder(this.settings.notesFolder);
             }
             
+            await this.app.vault.adapter.write(summaryFilePath, summaryContent);
+
+            // Unless preserving temp files is enabled, delete them
+            if (!this.settings.preserveTempFiles) {
+                // Don't delete temp files anymore since we're storing everything in one file
+                console.log("Using consolidated storage - no temp files to delete");
+            }
+
+            new Notice(`Daily summary for ${summaryDate} created`);
+            
+            // Return the same data structure as before for compatibility
             return {
                 studySessions,
                 breakSessions,
@@ -2785,10 +2959,9 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 createdFiles: Array.from(createdFiles),
                 createdLinks: Array.from(createdLinks)
             };
-            
         } catch (error) {
-            console.error('Error creating daily summary:', error);
-            new Notice('Error creating daily summary');
+            console.error("Error creating daily summary:", error);
+            new Notice("Error creating daily summary");
             return null;
         }
     }
@@ -3353,7 +3526,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
         }
     }
 
-    onunload() {
+    async onunload() {
         this.app.workspace
             .getLeavesOfType(VIEW_TYPE_STUDY_FLOW)
             .forEach(leaf => leaf.detach());
@@ -3416,6 +3589,169 @@ export default class StudyAnalyticsPlugin extends Plugin {
             }
             
             new Notice(`Reset ${goalCount} ${period} goals`);
+        }
+    }
+    
+    async loadSessionsData() {
+        try {
+            // Check if the sessions file exists
+            if (await this.app.vault.adapter.exists(this.sessionsFilePath)) {
+                // Read the file
+                const data = await this.app.vault.adapter.read(this.sessionsFilePath);
+                
+                // Parse the JSON data
+                const sessionsData = JSON.parse(data) as SessionsData;
+                
+                // Convert date strings back to Date objects for startTime
+                sessionsData.sessions.forEach(session => {
+                    session.startTime = new Date(session.startTime);
+                    
+                    // Convert date strings in distractions
+                    if (session.distractions) {
+                        session.distractions.forEach(distraction => {
+                            distraction.time = new Date(distraction.time);
+                        });
+                    }
+                    
+                    // Convert date strings in lineNotes
+                    if (session.lineNotes) {
+                        session.lineNotes.forEach(note => {
+                            note.time = new Date(note.time);
+                        });
+                    }
+                    
+                    // Convert date strings in reflections
+                    if (session.reflections) {
+                        session.reflections.forEach(reflection => {
+                            reflection.time = new Date(reflection.time);
+                        });
+                    }
+                    
+                    // Convert date strings in completedTasks
+                    if (session.completedTasks) {
+                        session.completedTasks.forEach(task => {
+                            task.time = new Date(task.time);
+                        });
+                    }
+                });
+                
+                this.sessionsData = sessionsData;
+            }
+        } catch (error) {
+            console.error("Error loading sessions data:", error);
+            new Notice("Error loading sessions data");
+            // Initialize with empty data if there was an error
+            this.sessionsData = { sessions: [], lastUpdated: new Date().toISOString() };
+        }
+    }
+
+    async saveSessionsData() {
+        try {
+            // Ensure the sessions folder exists
+            if (!(await this.app.vault.adapter.exists(this.settings.notesFolder))) {
+                await this.app.vault.createFolder(this.settings.notesFolder);
+            }
+            
+            // Save the sessions data to the file
+            await this.app.vault.adapter.write(
+                this.sessionsFilePath,
+                JSON.stringify(this.sessionsData, null, 2)
+            );
+        } catch (error) {
+            console.error("Error saving sessions data:", error);
+            new Notice("Error saving sessions data");
+        }
+    }
+    
+    async migrateTempFilesToConsolidated() {
+        const tempFolderPath = `${this.settings.notesFolder}/temp`;
+        
+        try {
+            // Check if temp folder exists
+            if (!(await this.app.vault.adapter.exists(tempFolderPath))) {
+                console.log("No temp folder found, no migration needed");
+                return;
+            }
+            
+            // Get list of temp files
+            const tempFiles = await this.app.vault.adapter.list(tempFolderPath);
+            
+            if (tempFiles.files.length === 0) {
+                console.log("No temp files found, no migration needed");
+                return;
+            }
+            
+            let migratedCount = 0;
+            
+            // Read each temp file and add it to the consolidated storage
+            for (const file of tempFiles.files) {
+                try {
+                    const content = await this.app.vault.adapter.read(file);
+                    const sessionData = JSON.parse(content) as SessionData;
+                    
+                    // Add ID if it doesn't have one
+                    if (!sessionData.id) {
+                        sessionData.id = `migrated_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+                    }
+                    
+                    // Convert date strings to Date objects
+                    sessionData.startTime = new Date(sessionData.startTime);
+                    
+                    // Convert nested date strings
+                    if (sessionData.distractions) {
+                        sessionData.distractions.forEach(d => {
+                            d.time = new Date(d.time);
+                        });
+                    }
+                    
+                    if (sessionData.lineNotes) {
+                        sessionData.lineNotes.forEach(n => {
+                            n.time = new Date(n.time);
+                        });
+                    }
+                    
+                    if (sessionData.completedTasks) {
+                        sessionData.completedTasks.forEach(t => {
+                            t.time = new Date(t.time);
+                        });
+                    }
+                    
+                    if (sessionData.reflections) {
+                        sessionData.reflections.forEach(r => {
+                            r.time = new Date(r.time);
+                        });
+                    }
+                    
+                    // Add to consolidated storage
+                    this.sessionsData.sessions.push(sessionData);
+                    migratedCount++;
+                    
+                    // Delete the temp file
+                    await this.app.vault.adapter.remove(file);
+                } catch (error) {
+                    console.error(`Error migrating file ${file}:`, error);
+                }
+            }
+            
+            if (migratedCount > 0) {
+                // Update the last updated time
+                this.sessionsData.lastUpdated = new Date().toISOString();
+                
+                // Save the consolidated data
+                await this.saveSessionsData();
+                
+                // Try to remove the temp folder
+                try {
+                    await this.app.vault.adapter.rmdir(tempFolderPath, false);
+                } catch (error) {
+                    console.log("Could not remove temp folder, it may not be empty");
+                }
+                
+                new Notice(`Migrated ${migratedCount} session files to consolidated storage`);
+            }
+        } catch (error) {
+            console.error("Error during migration:", error);
+            new Notice("Error migrating session data");
         }
     }
 }
