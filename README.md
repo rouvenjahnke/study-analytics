@@ -17,7 +17,7 @@ An Obsidian plugin that helps you manage your study sessions, track your habits,
 - **Reflection System**: Add reflections during or after study sessions to improve your process
 - **Compact Design**: Toggle a space-efficient interface ideal for smaller screens
 
-### Screenshots *[from the minimal thieme in obsidian]*
+### Screenshots *[from the minimal theme in obsidian]*
 #### Sidebar from this plugin
 ![Screenshot 2025-05-05 125144](https://github.com/user-attachments/assets/37d896bc-a5fa-442c-b6ed-e3837c5fed60)
 ![Screenshot 2025-05-05 125153](https://github.com/user-attachments/assets/53d61713-b855-4ea4-92f3-afee7420154b)
