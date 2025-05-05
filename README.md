@@ -24,13 +24,13 @@ An Obsidian plugin that helps you manage your study sessions, track your habits,
 
 #### Statistics in the daily summary
 Here is an examples of a part of a note for the study session
-![Screenshot 2025-05-05 130108](https://github.com/user-attachments/assets/189f0d54-ff76-4897-bebd-04139b02f41d)
+![Screenshot 2025-05-05 130636](https://github.com/user-attachments/assets/683cba6d-2e16-44d7-9aff-13d1993f6dfa)
 
 and here are the statistics around modifications and creations of files
-![Screenshot 2025-05-05 130215](https://github.com/user-attachments/assets/ecf5eb7d-5fb2-4412-b022-941ff4c079a4).
+![Screenshot 2025-05-05 130701](https://github.com/user-attachments/assets/52570486-f4f5-4bac-b3c2-61af28bbde26).
 
 #### Statistics in the weekly summary (a selection of these)
-![Screenshot 2025-05-05 125410](https://github.com/user-attachments/assets/d17cc45c-c178-4bb4-8958-262df47f8f02)
+![Screenshot 2025-05-05 130719](https://github.com/user-attachments/assets/e1457671-4fdd-4f90-bd09-9010f14c56a3)
 
 The totally word count by the different days,
 ![Screenshot 2025-05-05 125500](https://github.com/user-attachments/assets/008202ba-b85f-406a-b5c8-2c69e29acd81)
