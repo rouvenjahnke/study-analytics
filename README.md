@@ -17,7 +17,30 @@ An Obsidian plugin that helps you manage your study sessions, track your habits,
 - **Reflection System**: Add reflections during or after study sessions to improve your process
 - **Compact Design**: Toggle a space-efficient interface ideal for smaller screens
 
-## What's New in 1.1.0
+### Screenshots
+#### Sidebar from this plugin
+![Screenshot 2025-05-05 125144](https://github.com/user-attachments/assets/37d896bc-a5fa-442c-b6ed-e3837c5fed60)
+![Screenshot 2025-05-05 125153](https://github.com/user-attachments/assets/53d61713-b855-4ea4-92f3-afee7420154b)
+
+#### Statistics in the daily summary
+Here is an examples of a part of a note for the study session
+![Screenshot 2025-05-05 130108](https://github.com/user-attachments/assets/189f0d54-ff76-4897-bebd-04139b02f41d)
+
+and here are the statistics around modifications and creations of files
+![Screenshot 2025-05-05 130215](https://github.com/user-attachments/assets/ecf5eb7d-5fb2-4412-b022-941ff4c079a4).
+
+#### Statistics in the weekly summary (a selection of these)
+![Screenshot 2025-05-05 125410](https://github.com/user-attachments/assets/d17cc45c-c178-4bb4-8958-262df47f8f02)
+
+The totally word count by the different days,
+![Screenshot 2025-05-05 125500](https://github.com/user-attachments/assets/008202ba-b85f-406a-b5c8-2c69e29acd81)
+the study time
+![Screenshot 2025-05-05 125509](https://github.com/user-attachments/assets/6fca8abe-98bd-433a-bf83-89e72ff481a4)
+and the number of created and modified files/notes:
+![Screenshot 2025-05-05 125522](https://github.com/user-attachments/assets/58a89d77-cc28-4eca-97b6-444c8f66a32e).
+
+## Versions
+### What's New in 1.1.0
 
 - **Consolidated Storage**: All session data is now stored in a single JSON file, improving performance and reliability
 - **Recurring Sessions Improvements**: Fixed goal time tracking and interface updates for recurring session goals
@@ -30,13 +53,6 @@ An Obsidian plugin that helps you manage your study sessions, track your habits,
 2. Disable Safe Mode
 3. Click "Browse" and search for "Study Analytics"
 4. Install the plugin and enable it
-
-## Manual Installation
-
-1. Download the latest release from the Releases section
-2. Extract the zip file to your Obsidian plugins folder: `{vault}/.obsidian/plugins/`
-3. Reload Obsidian
-4. Enable the plugin in Settings > Community plugins
 
 ## Usage
 
