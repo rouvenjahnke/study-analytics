@@ -249,7 +249,7 @@ textarea.modal-input {
     margin-top: 0.5rem;
 }
 
-.tag {
+.study-flow-tag {
     padding: 0.25rem 0.75rem;
     border-radius: 15px;
     background: var(--background-modifier-border);
@@ -258,7 +258,7 @@ textarea.modal-input {
     transition: all 0.2s;
 }
 
-.tag[data-selected="true"] {
+.study-flow-tag[data-selected="true"] {
     background: var(--interactive-accent);
     color: var(--text-on-accent);
 }
@@ -352,6 +352,431 @@ textarea.modal-input {
 .focus-mode .quick-actions:hover,
 .focus-mode .session-controls:hover {
     opacity: 1;
+}
+
+/* Study Analytics Additional Styles */
+.study-flow-daily-stats {
+    background: var(--background-secondary-alt);
+    padding: 8px;
+    border-radius: 8px;
+    margin: 8px 8px 12px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.study-flow-daily-time {
+    color: var(--text-normal);
+    font-size: 0.9em;
+}
+
+.daily-time-total {
+    font-size: 1em;
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: var(--text-accent);
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+/* Compact design styles */
+.study-analytics-compact .study-flow-daily-stats {
+    padding: 3px;
+    margin: 3px 3px 5px;
+}
+
+.study-analytics-compact .timer-display {
+    font-size: 1.8em;
+    margin: 3px 0 0;
+}
+
+.study-analytics-compact .end-time-display {
+    margin: 0 0 3px;
+    font-size: 0.65em;
+}
+
+.study-analytics-compact .controls {
+    margin: 3px;
+    gap: 3px;
+}
+
+.study-analytics-compact .control-button {
+    padding: 3px 6px;
+    min-width: 50px;
+    width: 100%;
+    max-width: 110px;
+    font-size: 0.8em;
+}
+
+.study-analytics-compact .category-section, 
+.study-analytics-compact .difficulty-section, 
+.study-analytics-compact .reflection-section, 
+.study-analytics-compact .distraction-section, 
+.study-analytics-compact .notes-section {
+    margin: 3px;
+    padding: 3px;
+}
+
+.study-analytics-compact .notes-area {
+    min-height: 30px;
+    font-size: 0.8em;
+}
+
+.study-analytics-compact .goal-row {
+    margin: 0;
+    padding: 0;
+    font-size: 0.75em;
+}
+
+.study-analytics-compact .goals-heading {
+    font-size: 0.75em;
+    margin-bottom: 2px;
+}
+
+.study-analytics-compact .stopwatch-section {
+    margin: 3px 0 4px;
+}
+
+.study-analytics-compact .stopwatch-toggle {
+    padding: 2px 5px;
+    font-size: 0.75em;
+    width: 100%;
+    max-width: 110px;
+}
+
+.study-analytics-compact select,
+.study-analytics-compact .category-section label,
+.study-analytics-compact .difficulty-section label,
+.study-analytics-compact .notes-section label {
+    font-size: 0.8em;
+}
+
+.study-analytics-compact .recurring-goals-container {
+    font-size: 0.7em;
+    margin-top: 3px;
+    padding: 3px;
+}
+
+.study-analytics-compact .goal-remaining,
+.study-analytics-compact .goal-complete {
+    font-size: 0.75em;
+}
+
+.study-analytics-compact .reflection-button,
+.study-analytics-compact .distraction-button {
+    font-size: 0.8em;
+    padding: 3px;
+}
+
+.study-analytics-compact .distraction-input {
+    font-size: 0.8em;
+    padding: 3px;
+}
+
+/* Reflection modal enhancement */
+.study-analytics-blurred-modal {
+    backdrop-filter: blur(6px);
+}
+
+.study-analytics-blurred-modal .modal-content {
+    background-color: var(--background-primary);
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+    padding: 24px;
+    border: 1px solid var(--background-modifier-border);
+}
+
+.study-analytics-blurred-modal .modal-close-button {
+    color: var(--text-normal);
+}
+
+.study-analytics-blurred-modal textarea {
+    background-color: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    width: 100%;
+    padding: 12px;
+    border-radius: 6px;
+    font-size: 1.05em;
+    margin-bottom: 16px;
+    resize: vertical;
+    min-height: 150px;
+    transition: border-color 0.2s ease;
+}
+
+.study-analytics-blurred-modal textarea:focus {
+    border-color: var(--interactive-accent);
+    box-shadow: 0 0 0 2px rgba(var(--interactive-accent-rgb), 0.2);
+    outline: none;
+}
+
+.study-analytics-blurred-modal .button-section {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 12px;
+}
+
+.study-analytics-blurred-modal .mod-cta {
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+    padding: 8px 16px;
+    border-radius: 4px;
+    font-weight: 500;
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+.study-analytics-blurred-modal .mod-cta:hover {
+    background-color: var(--interactive-accent-hover);
+}
+
+.study-flow-daily-time {
+    color: var(--text-normal);
+}
+
+.daily-time-total {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: var(--text-accent);
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+/* Goals section styling */
+.recurring-goals-container {
+    font-size: 0.8em;
+    text-align: left;
+    margin-top: 6px;
+    padding: 6px;
+    background: var(--background-primary);
+    border-radius: 6px;
+    border: 1px solid var(--background-modifier-border);
+}
+
+.goals-heading {
+    font-weight: 600;
+    margin-bottom: 5px;
+    text-align: center;
+    color: var(--text-accent);
+    font-size: 0.9em;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.goal-row {
+    display: flex;
+    justify-content: space-between;
+    margin: 2px 0;
+    padding: 1px 0;
+    border-bottom: 1px dotted var(--background-modifier-border);
+}
+
+.goal-category {
+    font-weight: 500;
+    color: var(--text-normal);
+    font-size: 0.95em;
+}
+
+.goal-remaining {
+    color: var(--text-muted);
+    font-family: var(--font-monospace);
+    font-size: 0.85em;
+}
+
+.goal-complete {
+    color: var(--text-accent);
+    font-weight: 500;
+    font-family: var(--font-monospace);
+    font-size: 0.85em;
+}
+
+/* Timer display styling */
+.timer-display {
+    font-size: 2.8em;
+    text-align: center;
+    margin: 12px 0 2px;
+    font-family: var(--font-monospace);
+    font-weight: 300;
+    color: var(--text-normal);
+}
+
+.end-time-display {
+    text-align: center;
+    margin: 0 0 12px;
+    font-size: 0.8em;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* Button styling */
+.stopwatch-section {
+    text-align: center;
+    margin: 6px 0 12px;
+}
+
+.stopwatch-toggle {
+    padding: 5px 10px;
+    border-radius: 4px;
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    color: var(--text-normal);
+    font-size: 0.85em;
+    transition: all 0.2s ease;
+}
+
+.controls {
+    text-align: center;
+    margin: 10px 12px 15px;
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+}
+
+.control-button {
+    padding: 6px 12px;
+    min-width: 80px;
+    border-radius: 4px;
+    font-weight: 500;
+    font-size: 0.9em;
+    border: 1px solid var(--background-modifier-border);
+    background-color: var(--background-secondary);
+    color: var(--text-normal);
+    transition: all 0.2s ease;
+}
+
+.control-button:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+.start-button {
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border-color: var(--interactive-accent);
+}
+
+.start-button:hover {
+    background-color: var(--interactive-accent-hover);
+}
+
+.end-button {
+    background-color: var(--background-modifier-error-rgb);
+    color: white;
+    border-color: var(--background-modifier-error);
+}
+
+.end-button:hover {
+    background-color: var(--text-error);
+}
+
+/* Form controls styling */
+.category-section, 
+.difficulty-section, 
+.reflection-section, 
+.distraction-section, 
+.notes-section {
+    margin: 12px 10px;
+    padding: 8px;
+    background: var(--background-secondary-alt);
+    border-radius: 6px;
+    border: 1px solid var(--background-modifier-border);
+}
+
+.category-section label,
+.difficulty-section label,
+.notes-section label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 0.9em;
+    font-weight: 500;
+    color: var(--text-accent);
+}
+
+.notes-area, .distraction-input {
+    width: 100%;
+    margin-top: 8px;
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-primary);
+    padding: 8px;
+    font-family: var(--font-text);
+}
+
+.notes-area:focus, 
+.distraction-input:focus,
+select:focus {
+    border-color: var(--interactive-accent);
+    box-shadow: 0 0 0 2px rgba(var(--interactive-accent-rgb), 0.2);
+    outline: none;
+}
+
+select {
+    width: 100%;
+    padding: 6px;
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-primary);
+    color: var(--text-normal);
+}
+
+.difficulty-slider {
+    width: 100%;
+    margin-top: 8px;
+    accent-color: var(--interactive-accent);
+}
+
+/* Button styling */
+.reflection-button,
+.distraction-button {
+    width: 100%;
+    margin-top: 8px;
+    padding: 6px;
+    border-radius: 4px;
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    color: var(--text-normal);
+    font-weight: 500;
+    transition: all 0.2s ease;
+}
+
+.reflection-button:hover,
+.distraction-button:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+/* Section titles */
+.category-section::before,
+.difficulty-section::before,
+.notes-section::before,
+.reflection-section::before,
+.distraction-section::before {
+    content: '';
+    display: block;
+    width: 100%;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--background-modifier-border), transparent);
+    margin-bottom: 12px;
+    opacity: 0.5;
+}
+
+.study-analytics-compact .recurring-goals-container {
+    font-size: 0.85em;
+    margin-top: 5px;
+    padding: 5px;
+}
+
+.study-analytics-compact .goal-row {
+    margin: 2px 0;
+    padding: 1px 0;
+    font-size: 0.85em;
+}
+
+.study-analytics-compact .goals-heading {
+    font-size: 0.85em;
+    margin-bottom: 4px;
+}
+
+.study-analytics-compact .goal-remaining,
+.study-analytics-compact .goal-complete {
+    font-size: 0.8em;
 }
 
 /* Dark Theme Adjustments */

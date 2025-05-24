@@ -125,7 +125,7 @@ interface SessionData {
     date: string;
     completed: boolean;
     isBreak: boolean;
-    pauseDuration: number;
+    breakDuration: number;
     wordCount: number;
     createdLinks: string[]; // Links created during the session
     id?: string; // Unique identifier for the session
@@ -151,8 +151,8 @@ class StudySession {
     completed: boolean;
     completedTasks: CompletedTask[];
     reflections: ReflectionNote[];
-    pauseStartTime: Date | null;
-    totalPauseDuration: number;
+    breakStartTime: Date | null;
+    totalBreakDuration: number;
     isBreak: boolean;
     wordCount: number;
     initialWordCounts: Map<string, number>;
@@ -175,8 +175,8 @@ class StudySession {
         this.completed = false;
         this.completedTasks = [];
         this.reflections = [];
-        this.pauseStartTime = null;
-        this.totalPauseDuration = 0;
+        this.breakStartTime = null;
+        this.totalBreakDuration = 0;
         this.isBreak = category === '~Break~';
         this.wordCount = 0;
         this.initialWordCounts = new Map<string, number>();
@@ -185,16 +185,16 @@ class StudySession {
         this.id = crypto.randomUUID ? crypto.randomUUID() : `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     }
 
-    pause(): void {
-        if (!this.pauseStartTime) {
-            this.pauseStartTime = new Date();
+    break(): void {
+        if (!this.breakStartTime) {
+            this.breakStartTime = new Date();
         }
     }
 
     resume(): void {
-        if (this.pauseStartTime) {
-            this.totalPauseDuration += (Number(new Date()) - Number(this.pauseStartTime));
-            this.pauseStartTime = null;
+        if (this.breakStartTime) {
+            this.totalBreakDuration += (Number(new Date()) - Number(this.breakStartTime));
+            this.breakStartTime = null;
         }
     }
 
@@ -275,10 +275,10 @@ class StudySession {
     getDuration(): number {
         const end = this.endTime || new Date();
         let duration = Math.round((Number(end) - Number(this.startTime)) / 60000); // in minutes
-        if (this.pauseStartTime) {
-            duration -= Math.round((Number(new Date()) - Number(this.pauseStartTime)) / 60000);
+        if (this.breakStartTime) {
+            duration -= Math.round((Number(new Date()) - Number(this.breakStartTime)) / 60000);
         }
-        duration -= Math.round(this.totalPauseDuration / 60000);
+        duration -= Math.round(this.totalBreakDuration / 60000);
         return Math.max(0, duration);
     }
 
@@ -301,7 +301,7 @@ class StudySession {
             date: this.startTime.toISOString().split('T')[0],
             completed: this.completed,
             isBreak: this.isBreak,
-            pauseDuration: Math.round(this.totalPauseDuration / 60000),
+            breakDuration: Math.round(this.totalBreakDuration / 60000),
             wordCount: this.wordCount,
             createdLinks: Array.from(this.createdLinks),
             id: this.id
@@ -450,7 +450,7 @@ class StudyFlowView extends ItemView {
                 // If timer was running, restart it with the reset time
                 const wasRunning = this.isRunning;
                 if (wasRunning) {
-                    this.pauseTimer();
+                    this.breakTimer();
                     this.startTimer();
                 }
                 
@@ -504,7 +504,7 @@ class StudyFlowView extends ItemView {
         // Add Reflection Note Button
         const reflectionDiv = container.createEl('div', { cls: 'reflection-section' });
         const reflectionButton = reflectionDiv.createEl('button', {
-            text: 'Add Reflection',
+            text: 'Add reflection',
             cls: 'reflection-button'
         });
         reflectionButton.onclick = () => this.addReflection();
@@ -512,7 +512,7 @@ class StudyFlowView extends ItemView {
         // Distraction Reporter
         const distractionDiv = container.createEl('div', { cls: 'distraction-section' });
         const distractionButton = distractionDiv.createEl('button', {
-            text: 'Report Distraction',
+            text: 'Report distraction',
             cls: 'distraction-button'
         });
         this.distractionInput = distractionDiv.createEl('input', {
@@ -532,8 +532,6 @@ class StudyFlowView extends ItemView {
         
         distractionButton.onclick = () => this.reportDistraction();
 
-        // Add styles
-        container.createEl('style').textContent = this.getStyles();
     }
 
     async updateDailyTime(): Promise<void> {
@@ -543,13 +541,13 @@ class StudyFlowView extends ItemView {
         try {
             // Lese Sitzungsdaten aus der konsolidierten Speicherung
             this.plugin.sessionsData.sessions.forEach(session => {
-                // Überprüfe, ob die Sitzung von heute ist und KEINE Pause
+                // Überprüfe, ob die Sitzung von heute ist und KEINE Break
                 if (session.date === today && !session.isBreak) {
                     totalMinutes += session.duration;
                 }
             });
 
-            // Füge die Zeit der aktuellen Sitzung hinzu, wenn es keine Pause ist
+            // Füge die Zeit der aktuellen Sitzung hinzu, wenn es keine Break ist
             if (this.plugin.currentSession && !this.plugin.currentSession.isBreak) {
                 totalMinutes += this.plugin.currentSession.getDuration();
             }
@@ -691,7 +689,7 @@ class StudyFlowView extends ItemView {
         try {
             // Lese Sitzungsdaten aus der konsolidierten Speicherung
             this.plugin.sessionsData.sessions.forEach(session => {
-                // Überprüfe, ob die Sitzung vom angegebenen Datum ist und keine Pause
+                // Überprüfe, ob die Sitzung vom angegebenen Datum ist und keine Break
                 if (session.date === date && !session.isBreak) {
                     // Initialisiere Kategorie, falls nötig
                     if (!categoryTimes[session.category]) {
@@ -703,7 +701,7 @@ class StudyFlowView extends ItemView {
                 }
             });
             
-            // Füge die Zeit der aktuellen Sitzung hinzu, wenn es keine Pause ist
+            // Füge die Zeit der aktuellen Sitzung hinzu, wenn es keine Break ist
             if (this.plugin.currentSession && !this.plugin.currentSession.isBreak) {
                 const category = this.plugin.currentSession.category;
                 const duration = this.plugin.currentSession.getDuration() / 60; // Umrechnung von Minuten in Stunden
@@ -733,434 +731,6 @@ class StudyFlowView extends ItemView {
         return categoryTimes;
     }
 
-    getStyles(): string {
-        return `
-            /* Main container styling */
-            .study-flow-daily-stats {
-                background: var(--background-secondary-alt);
-                padding: 8px;
-                border-radius: 8px;
-                margin: 8px 8px 12px;
-                box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-            }
-            
-            .study-flow-daily-time {
-                color: var(--text-normal);
-                font-size: 0.9em;
-            }
-            
-            .daily-time-total {
-                font-size: 1em;
-                font-weight: 600;
-                margin-bottom: 8px;
-                color: var(--text-accent);
-                padding-bottom: 6px;
-                border-bottom: 1px solid var(--background-modifier-border);
-            }
-            
-            /* Compact design styles */
-            .study-analytics-compact .study-flow-daily-stats {
-                padding: 3px;
-                margin: 3px 3px 5px;
-            }
-            
-            .study-analytics-compact .timer-display {
-                font-size: 1.8em;
-                margin: 3px 0 0;
-            }
-            
-            .study-analytics-compact .end-time-display {
-                margin: 0 0 3px;
-                font-size: 0.65em;
-            }
-            
-            .study-analytics-compact .controls {
-                margin: 3px;
-                gap: 3px;
-            }
-            
-            .study-analytics-compact .control-button {
-                padding: 3px 6px;
-                min-width: 50px;
-                width: 100%;
-                max-width: 110px;
-                font-size: 0.8em;
-            }
-            
-            .study-analytics-compact .category-section, 
-            .study-analytics-compact .difficulty-section, 
-            .study-analytics-compact .reflection-section, 
-            .study-analytics-compact .distraction-section, 
-            .study-analytics-compact .notes-section {
-                margin: 3px;
-                padding: 3px;
-            }
-            
-            .study-analytics-compact .notes-area {
-                min-height: 30px;
-                font-size: 0.8em;
-            }
-            
-            .study-analytics-compact .goal-row {
-                margin: 0;
-                padding: 0;
-                font-size: 0.75em;
-            }
-            
-            .study-analytics-compact .goals-heading {
-                font-size: 0.75em;
-                margin-bottom: 2px;
-            }
-            
-            .study-analytics-compact .stopwatch-section {
-                margin: 3px 0 4px;
-            }
-            
-            .study-analytics-compact .stopwatch-toggle {
-                padding: 2px 5px;
-                font-size: 0.75em;
-                width: 100%;
-                max-width: 110px;
-            }
-            
-            .study-analytics-compact select,
-            .study-analytics-compact .category-section label,
-            .study-analytics-compact .difficulty-section label,
-            .study-analytics-compact .notes-section label {
-                font-size: 0.8em;
-            }
-            
-            .study-analytics-compact .recurring-goals-container {
-                font-size: 0.7em;
-                margin-top: 3px;
-                padding: 3px;
-            }
-            
-            .study-analytics-compact .goal-remaining,
-            .study-analytics-compact .goal-complete {
-                font-size: 0.75em;
-            }
-            
-            .study-analytics-compact .reflection-button,
-            .study-analytics-compact .distraction-button {
-                font-size: 0.8em;
-                padding: 3px;
-            }
-            
-            .study-analytics-compact .distraction-input {
-                font-size: 0.8em;
-                padding: 3px;
-            }
-            
-            /* Reflection modal enhancement */
-            .study-analytics-blurred-modal {
-                backdrop-filter: blur(6px);
-            }
-            
-            .study-analytics-blurred-modal .modal-content {
-                background-color: var(--background-primary);
-                border-radius: 8px;
-                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-                padding: 24px;
-                border: 1px solid var(--background-modifier-border);
-            }
-            
-            .study-analytics-blurred-modal .modal-close-button {
-                color: var(--text-normal);
-            }
-            
-            .study-analytics-blurred-modal textarea {
-                background-color: var(--background-primary);
-                border: 1px solid var(--background-modifier-border);
-                width: 100%;
-                padding: 12px;
-                border-radius: 6px;
-                font-size: 1.05em;
-                margin-bottom: 16px;
-                resize: vertical;
-                min-height: 150px;
-                transition: border-color 0.2s ease;
-            }
-            
-            .study-analytics-blurred-modal textarea:focus {
-                border-color: var(--interactive-accent);
-                box-shadow: 0 0 0 2px rgba(var(--interactive-accent-rgb), 0.2);
-                outline: none;
-            }
-            
-            .study-analytics-blurred-modal .button-section {
-                display: flex;
-                justify-content: flex-end;
-                margin-top: 12px;
-            }
-            
-            .study-analytics-blurred-modal .mod-cta {
-                background-color: var(--interactive-accent);
-                color: var(--text-on-accent);
-                padding: 8px 16px;
-                border-radius: 4px;
-                font-weight: 500;
-                border: none;
-                cursor: pointer;
-                transition: background-color 0.2s ease;
-            }
-            
-            .study-analytics-blurred-modal .mod-cta:hover {
-                background-color: var(--interactive-accent-hover);
-            }
-            
-            .study-flow-daily-time {
-                color: var(--text-normal);
-            }
-            
-            .daily-time-total {
-                font-size: 1.1em;
-                font-weight: 600;
-                margin-bottom: 12px;
-                color: var(--text-accent);
-                padding-bottom: 8px;
-                border-bottom: 1px solid var(--background-modifier-border);
-            }
-            
-            /* Goals section styling */
-            .recurring-goals-container {
-                font-size: 0.8em;
-                text-align: left;
-                margin-top: 6px;
-                padding: 6px;
-                background: var(--background-primary);
-                border-radius: 6px;
-                border: 1px solid var(--background-modifier-border);
-            }
-            
-            .goals-heading {
-                font-weight: 600;
-                margin-bottom: 5px;
-                text-align: center;
-                color: var(--text-accent);
-                font-size: 0.9em;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            }
-            
-            .goal-row {
-                display: flex;
-                justify-content: space-between;
-                margin: 2px 0;
-                padding: 1px 0;
-                border-bottom: 1px dotted var(--background-modifier-border);
-            }
-            
-            .goal-category {
-                font-weight: 500;
-                color: var(--text-normal);
-                font-size: 0.95em;
-            }
-            
-            .goal-remaining {
-                color: var(--text-muted);
-                font-family: var(--font-monospace);
-                font-size: 0.85em;
-            }
-            
-            .goal-complete {
-                color: var(--text-accent);
-                font-weight: 500;
-                font-family: var(--font-monospace);
-                font-size: 0.85em;
-            }
-
-            /* Timer display styling */
-            .timer-display {
-                font-size: 2.8em;
-                text-align: center;
-                margin: 12px 0 2px;
-                font-family: var(--font-monospace);
-                font-weight: 300;
-                color: var(--text-normal);
-            }
-            
-            .end-time-display {
-                text-align: center;
-                margin: 0 0 12px;
-                font-size: 0.8em;
-                color: var(--text-muted);
-                font-style: italic;
-            }
-            
-            /* Button styling */
-            .stopwatch-section {
-                text-align: center;
-                margin: 6px 0 12px;
-            }
-            
-            .stopwatch-toggle {
-                padding: 5px 10px;
-                border-radius: 4px;
-                background-color: var(--background-secondary);
-                border: 1px solid var(--background-modifier-border);
-                color: var(--text-normal);
-                font-size: 0.85em;
-                transition: all 0.2s ease;
-            }
-            
-            .controls {
-                text-align: center;
-                margin: 10px 12px 15px;
-                display: flex;
-                justify-content: center;
-                gap: 8px;
-            }
-            
-            .control-button {
-                padding: 6px 12px;
-                min-width: 80px;
-                border-radius: 4px;
-                font-weight: 500;
-                font-size: 0.9em;
-                border: 1px solid var(--background-modifier-border);
-                background-color: var(--background-secondary);
-                color: var(--text-normal);
-                transition: all 0.2s ease;
-            }
-            
-            .control-button:hover {
-                background-color: var(--background-modifier-hover);
-            }
-            
-            .start-button {
-                background-color: var(--interactive-accent);
-                color: var(--text-on-accent);
-                border-color: var(--interactive-accent);
-            }
-            
-            .start-button:hover {
-                background-color: var(--interactive-accent-hover);
-            }
-            
-            .end-button {
-                background-color: var(--background-modifier-error-rgb);
-                color: white;
-                border-color: var(--background-modifier-error);
-            }
-            
-            .end-button:hover {
-                background-color: var(--text-error);
-            }
-            
-            /* Form controls styling */
-            .category-section, 
-            .difficulty-section, 
-            .reflection-section, 
-            .distraction-section, 
-            .notes-section {
-                margin: 12px 10px;
-                padding: 8px;
-                background: var(--background-secondary-alt);
-                border-radius: 6px;
-                border: 1px solid var(--background-modifier-border);
-            }
-            
-            .category-section label,
-            .difficulty-section label,
-            .notes-section label {
-                display: block;
-                margin-bottom: 6px;
-                font-size: 0.9em;
-                font-weight: 500;
-                color: var(--text-accent);
-            }
-            
-            .notes-area, .distraction-input {
-                width: 100%;
-                margin-top: 8px;
-                border-radius: 4px;
-                border: 1px solid var(--background-modifier-border);
-                background: var(--background-primary);
-                padding: 8px;
-                font-family: var(--font-text);
-            }
-            
-            .notes-area:focus, 
-            .distraction-input:focus,
-            select:focus {
-                border-color: var(--interactive-accent);
-                box-shadow: 0 0 0 2px rgba(var(--interactive-accent-rgb), 0.2);
-                outline: none;
-            }
-            
-            select {
-                width: 100%;
-                padding: 6px;
-                border-radius: 4px;
-                border: 1px solid var(--background-modifier-border);
-                background: var(--background-primary);
-                color: var(--text-normal);
-            }
-            
-            .difficulty-slider {
-                width: 100%;
-                margin-top: 8px;
-                accent-color: var(--interactive-accent);
-            }
-            
-            /* Button styling */
-            .reflection-button,
-            .distraction-button {
-                width: 100%;
-                margin-top: 8px;
-                padding: 6px;
-                border-radius: 4px;
-                background-color: var(--background-secondary);
-                border: 1px solid var(--background-modifier-border);
-                color: var(--text-normal);
-                font-weight: 500;
-                transition: all 0.2s ease;
-            }
-            
-            .reflection-button:hover,
-            .distraction-button:hover {
-                background-color: var(--background-modifier-hover);
-            }
-            
-            /* Section titles */
-            .category-section::before,
-            .difficulty-section::before,
-            .notes-section::before,
-            .reflection-section::before,
-            .distraction-section::before {
-                content: '';
-                display: block;
-                width: 100%;
-                height: 2px;
-                background: linear-gradient(90deg, transparent, var(--background-modifier-border), transparent);
-                margin-bottom: 12px;
-                opacity: 0.5;
-            }
-            
-            .study-analytics-compact .recurring-goals-container {
-                font-size: 0.85em;
-                margin-top: 5px;
-                padding: 5px;
-            }
-            
-            .study-analytics-compact .goal-row {
-                margin: 2px 0;
-                padding: 1px 0;
-                font-size: 0.85em;
-            }
-            
-            .study-analytics-compact .goals-heading {
-                font-size: 0.85em;
-                margin-bottom: 4px;
-            }
-            
-            .study-analytics-compact .goal-remaining,
-            .study-analytics-compact .goal-complete {
-                font-size: 0.8em;
-            }
-        `;
-    }
 
     updateCategorySelect(): void {
         this.categorySelect.empty();
@@ -1292,7 +862,7 @@ class StudyFlowView extends ItemView {
 
     toggleTimer(): void {
         if (this.isRunning) {
-            this.pauseTimer();
+            this.breakTimer();
         } else {
             this.startTimer();
         }
@@ -1331,7 +901,7 @@ class StudyFlowView extends ItemView {
                     // Prüfen, ob das Ziel erreicht wurde
                     if (!goal.achieved && goal.timeSpent >= goal.timeGoal) {
                         goal.achieved = true;
-                        new Notice(`Ziel für ${category} erreicht!`);
+                        new Notice(`Goal for ${category} reached!`);
                     }
                     
                     // Einstellungen speichern
@@ -1340,7 +910,7 @@ class StudyFlowView extends ItemView {
             }
             
             if (wasRunning) {
-                this.pauseTimer();
+                this.breakTimer();
             }
             
             const sessionData = this.plugin.currentSession.end();
@@ -1406,7 +976,7 @@ class StudyFlowView extends ItemView {
         }
 
         this.isRunning = true;
-        this.startButton.textContent = 'Pause';
+        this.startButton.textContent = 'Break';
 
         if (this.isStopwatch) {
             if (!this.stopwatchStartTime) {
@@ -1463,13 +1033,13 @@ class StudyFlowView extends ItemView {
                     
                     // Check if timer has reached zero
                     if (this.goalTimeRemaining <= 0) {
-                        this.pauseTimer();
+                        this.breakTimer();
                         const category = this.categorySelect.value;
                         // Only show completion message if the goal was actually achieved during this session
                         // and wasn't already displayed
                         const goal = this.plugin.settings.recurringSessionGoals[category];
                         if (goal && !goal.achieved) {
-                            new Notice(`Ziel für ${category} erreicht!`);
+                            new Notice(`Goal for ${category} reached!`);
                             goal.achieved = true;
                             this.plugin.saveSettings();
                         }
@@ -1507,12 +1077,12 @@ class StudyFlowView extends ItemView {
         }
     }
 
-    pauseTimer(): void {
+    breakTimer(): void {
         this.isRunning = false;
         this.startButton.textContent = 'Start';
 
         if (this.plugin.currentSession) {
-            this.plugin.currentSession.pause();
+            this.plugin.currentSession.break();
         }
 
         if (this.interval) {
@@ -1530,7 +1100,7 @@ class StudyFlowView extends ItemView {
     }
 
     async completeTimer(): Promise<void> {
-        this.pauseTimer();
+        this.breakTimer();
         
         if (!this.isBreak) {
             this.pomodoroCount++;
@@ -1655,8 +1225,8 @@ class StudyFlowView extends ItemView {
             statsList.createEl('li', { text: `⏱️ Duration: ${session.getDuration()} minutes` });
             statsList.createEl('li', { text: `🍅 Pomodoros: ${session.pomodorosCompleted}` });
             statsList.createEl('li', { text: `⚠️ Distractions: ${session.distractions.length}` });
-            statsList.createEl('li', { text: `📝 Modified Files: ${session.modifiedFiles.size}` });
-            statsList.createEl('li', { text: `✅ Completed Tasks: ${session.completedTasks.length}` });
+            statsList.createEl('li', { text: `📝 Modified files: ${session.modifiedFiles.size}` });
+            statsList.createEl('li', { text: `✅ Completed tasks: ${session.completedTasks.length}` });
         }
 
         contentEl.createEl('p', { text: '💭 What are your thoughts on this study session so far?' });
@@ -1670,7 +1240,7 @@ class StudyFlowView extends ItemView {
 
         const buttonDiv = contentEl.createEl('div', { cls: 'button-section' });
         const submitButton = buttonDiv.createEl('button', {
-            text: 'Add Reflection',
+            text: 'Add reflection',
             cls: 'mod-cta'
         });
 
@@ -1704,7 +1274,7 @@ class StudyFlowView extends ItemView {
 
     toggleTimerMode(): void {
         if (this.isRunning) {
-            this.pauseTimer();
+            this.breakTimer();
         }
         
         // Remember current category
@@ -1722,7 +1292,7 @@ class StudyFlowView extends ItemView {
             if (this.plugin.settings.enableRecurringSessions) {
                 this.isStopwatch = false;
                 this.isRecurringSession = true;
-                this.stopwatchToggle.textContent = 'Switch to Pomodoro';
+                this.stopwatchToggle.textContent = 'Switch to pomodoro';
                 
                 // Beim Wechsel in den Recurring-Sessions-Modus, setze die volle Zielzeit für die aktuelle Kategorie
                 if (this.plugin.settings.recurringSessionGoals[currentCategory]) {
@@ -1733,13 +1303,13 @@ class StudyFlowView extends ItemView {
                 // If recurring sessions disabled, go directly to Pomodoro
                 this.isStopwatch = false;
                 this.isRecurringSession = false;
-                this.stopwatchToggle.textContent = 'Switch to Stopwatch';
+                this.stopwatchToggle.textContent = 'Switch to stopwatch';
             }
         } else {
             // Recurring Sessions -> Pomodoro
             this.isStopwatch = false;
             this.isRecurringSession = false;
-            this.stopwatchToggle.textContent = 'Switch to Stopwatch';
+            this.stopwatchToggle.textContent = 'Switch to stopwatch';
         }
         
         this.resetSession();
@@ -1769,10 +1339,10 @@ class StudyFlowSettingTab extends PluginSettingTab {
         const { containerEl } = this;
         containerEl.empty();
 
-        containerEl.createEl('h3', { text: 'Timer Settings' });
+        new Setting(containerEl).setName('Timer').setHeading();
 
         new Setting(containerEl)
-            .setName('Pomodoro Duration')
+            .setName('Pomodoro duration')
             .setDesc('Duration in minutes')
             .addText(text => text
                 .setValue(String(this.plugin.settings.pomodoroTime))
@@ -1782,7 +1352,7 @@ class StudyFlowSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
-            .setName('Short Break Duration')
+            .setName('Short break duration')
             .setDesc('Duration in minutes')
             .addText(text => text
                 .setValue(String(this.plugin.settings.shortBreakTime))
@@ -1792,7 +1362,7 @@ class StudyFlowSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
-            .setName('Long Break Duration')
+            .setName('Long break duration')
             .setDesc('Duration in minutes')
             .addText(text => text
                 .setValue(String(this.plugin.settings.longBreakTime))
@@ -1802,7 +1372,7 @@ class StudyFlowSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
-            .setName('Long Break Interval')
+            .setName('Long break interval')
             .setDesc('Number of pomodoros before long break')
             .addText(text => text
                 .setValue(String(this.plugin.settings.longBreakInterval))
@@ -1811,7 +1381,7 @@ class StudyFlowSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        containerEl.createEl('h3', { text: 'Tags' });
+        new Setting(containerEl).setName('Tags').setHeading();
 
         const tagInput = new Setting(containerEl)
             .setName('Add new tag')
@@ -1845,7 +1415,7 @@ class StudyFlowSettingTab extends PluginSettingTab {
                     }));
         });
 
-        containerEl.createEl('h3', { text: 'Categories' });
+        new Setting(containerEl).setName('Categories').setHeading();
 
         const categoryInput = new Setting(containerEl)
             .setName('Add new category')
@@ -1879,7 +1449,6 @@ class StudyFlowSettingTab extends PluginSettingTab {
             }
         });
 
-        containerEl.createEl('h3', { text: 'Other Settings' });
 
         new Setting(containerEl)
             .setName('Notes Folder')
@@ -1892,7 +1461,7 @@ class StudyFlowSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
-            .setName('Focus Path')
+            .setName('Focus path')
             .setDesc('Path for tracking modified files')
             .addText(text => text
                 .setValue(this.plugin.settings.focusPath)
@@ -1982,7 +1551,7 @@ class StudyFlowSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
                 
-        containerEl.createEl('h3', { text: 'Summary Settings' });
+        new Setting(containerEl).setName('Summary').setHeading();
         
         new Setting(containerEl)
             .setName('Create daily summary')
@@ -2197,7 +1766,7 @@ class StudyFlowSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        containerEl.createEl('h3', { text: 'Recurring Sessions' });
+        new Setting(containerEl).setName('Recurring sessions').setHeading();
 
         new Setting(containerEl)
             .setName('Enable Recurring Sessions')
@@ -2309,10 +1878,10 @@ class StudyFlowSettingTab extends PluginSettingTab {
                                     if (view) {
                                         // Check if this is the current active category in recurring session mode
                                         if (view.isRecurringSession && view.categorySelect.value === category) {
-                                            // If timer is running, pause it
+                                            // If timer is running, break it
                                             const wasRunning = view.isRunning;
                                             if (wasRunning) {
-                                                view.pauseTimer();
+                                                view.breakTimer();
                                             }
                                             
                                             // Reset the timer with full category goal time
@@ -2475,7 +2044,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
         // Commands
         this.addCommand({
             id: 'start-new-session',
-            name: 'Start New Study Session',
+            name: 'Start new study session',
             callback: async () => {
                 await this.activateView();
                 const view = this.getStudyFlowView();
@@ -2489,26 +2058,26 @@ export default class StudyAnalyticsPlugin extends Plugin {
 
         this.addCommand({
             id: 'end-current-session',
-            name: 'End Current Study Session',
+            name: 'End current study session',
             callback: () => this.endCurrentSession()
         });
 
         this.addCommand({
             id: 'create-daily-summary',
-            name: 'Create Daily Study Summary',
+            name: 'Create daily study summary',
             callback: () => this.createDailySummary()
         });
 
         this.addCommand({
             id: 'create-weekly-summary',
-            name: 'Create Weekly Study Summary',
+            name: 'Create weekly study summary',
             callback: () => this.createWeeklySummary()
         });
 
         // Command to toggle timer state
         this.addCommand({
             id: 'toggle-timer',
-            name: 'Toggle Timer (Start/Pause)',
+            name: 'Toggle timer (Start/Break)',
             callback: () => {
                 const view = this.getStudyFlowView();
                 if (view) {
@@ -2618,7 +2187,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
                         // Prüfen, ob das Ziel erreicht wurde
                         if (!goal.achieved && goal.timeSpent >= goal.timeGoal) {
                             goal.achieved = true;
-                            new Notice(`Ziel für ${category} erreicht!`);
+                            new Notice(`Goal for ${category} reached!`);
                         }
                         
                         // Einstellungen speichern
@@ -2743,7 +2312,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
             summaryContent += `Words written:: ${totalWordCount}\n\n`;
 
             // Daily statistics
-            summaryContent += `## 📊 Daily Statistics\n`;
+            summaryContent += `## 📊 Daily statistics\n`;
             summaryContent += `- ⏱️ Study Time: ${studyHours}h ${studyMinutes}m\n`;
             summaryContent += `- ⏸️ Break Time: ${breakHours}h ${breakMinutes}m\n`;
             summaryContent += `- 🕙 Total Time: ${totalTimeHours}h ${totalTimeMinutes}m\n`;
@@ -2753,7 +2322,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
             summaryContent += `- 📖 Opened Files: ${openedFiles.size}\n`;
             summaryContent += `- 📄 Created Files: ${totalCreatedFiles}\n`;
             summaryContent += `- 🔗 Created Links: ${totalCreatedLinks}\n`;
-            summaryContent += `- ✅ Completed Tasks: ${totalTasks}\n`;
+            summaryContent += `- ✅ Completed tasks: ${totalTasks}\n`;
             summaryContent += `- 📏 Words Written: ${totalWordCount}\n`;
             summaryContent += `- 📈 Average Difficulty: ${avgDifficulty}/5\n\n`;
 
@@ -3162,7 +2731,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
             summaryContent += `Words written:: ${weeklyWordCount}\n\n`;
             
             // Weekly Statistics
-            summaryContent += `## 📊 Weekly Statistics\n`;
+            summaryContent += `## 📊 Weekly statistics\n`;
             summaryContent += `- ⏱️ Study Time: ${studyHours}h ${studyMinutes}m\n`;
             summaryContent += `- ⏸️ Break Time: ${breakHours}h ${breakMinutes}m\n`;
             summaryContent += `- 🕙 Total Time: ${totalTimeHours}h ${totalTimeMinutes}m\n`;
@@ -3174,7 +2743,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
             summaryContent += `- 📔 Created Notes: ${totalCreatedNotes}\n`;
             summaryContent += `- 📝 Modified Notes: ${totalModifiedNotes}\n`;
             summaryContent += `- 🔗 Created Links: ${totalCreatedLinks}\n`;
-            summaryContent += `- ✅ Completed Tasks: ${weeklyTasks}\n`;
+            summaryContent += `- ✅ Completed tasks: ${weeklyTasks}\n`;
             summaryContent += `- 📏 Words Written: ${weeklyWordCount}\n`;
             summaryContent += `- 📈 Average Difficulty: ${avgDifficulty}/5\n\n`;
             
@@ -3557,10 +3126,10 @@ export default class StudyAnalyticsPlugin extends Plugin {
             if (view) {
                 // If currently in recurring sessions mode, reset the session
                 if (view.isRecurringSession) {
-                    // If timer is running, pause it
+                    // If timer is running, break it
                     const wasRunning = view.isRunning;
                     if (wasRunning) {
-                        view.pauseTimer();
+                        view.breakTimer();
                     }
                     
                     // Recalculate goal time for the current category
