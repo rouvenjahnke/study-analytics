@@ -104,8 +104,11 @@
 }
 
 .stopwatch-toggle {
-    padding: 5px 15px;
+    padding: 5px 10px;
     margin: 5px;
+    border-radius: 4px;
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
 }
 
 .controls {
@@ -147,17 +150,19 @@
 }
 
 .study-flow-daily-stats {
-    background: var(--background-secondary);
-    padding: 10px;
-    border-radius: 5px;
-    margin: 10px 20px;
+    display: inline-block;
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin: 8px 16px;
     text-align: center;
 }
 
 .study-flow-daily-time {
-    font-size: 1.2em;
-    font-weight: bold;
-    color: var(--text-accent);
+    font-size: 0.95em;
+    font-weight: 600;
+    color: var(--text-normal);
 }
 
 /* Quick Actions */
@@ -356,31 +361,38 @@ textarea.modal-input {
 
 /* Study Analytics Additional Styles */
 .study-flow-daily-stats {
-    background: var(--background-secondary-alt);
-    padding: 8px;
-    border-radius: 8px;
-    margin: 8px 8px 12px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    display: inline-block;
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin: 8px 16px;
+    text-align: center;
 }
 
 .study-flow-daily-time {
     color: var(--text-normal);
-    font-size: 0.9em;
+    font-size: 0.95em;
+    font-weight: 600;
 }
 
 .daily-time-total {
-    font-size: 1em;
+    font-size: 1.0em;
     font-weight: 600;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
     color: var(--text-accent);
-    padding-bottom: 6px;
-    border-bottom: 1px solid var(--background-modifier-border);
+    padding-bottom: 4px;
+    border-bottom: 1px dotted var(--background-modifier-border);
 }
 
 /* Compact design styles */
 .study-analytics-compact .study-flow-daily-stats {
-    padding: 3px;
-    margin: 3px 3px 5px;
+    padding: 4px 8px;
+    margin: 6px 12px;
+}
+
+.study-analytics-compact .daily-time-total {
+    font-size: 0.95em;
 }
 
 .study-analytics-compact .timer-display {
@@ -533,12 +545,12 @@ textarea.modal-input {
 }
 
 .daily-time-total {
-    font-size: 1.1em;
+    font-size: 1.0em;
     font-weight: 600;
-    margin-bottom: 12px;
+    margin-bottom: 6px;
     color: var(--text-accent);
-    padding-bottom: 8px;
-    border-bottom: 1px solid var(--background-modifier-border);
+    padding-bottom: 4px;
+    border-bottom: 1px dotted var(--background-modifier-border);
 }
 
 /* Goals section styling */

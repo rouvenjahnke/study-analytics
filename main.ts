@@ -1,4 +1,12 @@
 import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, TFile, TextComponent } from 'obsidian';
+import { TimerService } from './src/services/timer/TimerService';
+import type { TimerMode } from './src/services/timer/TimerTypes';
+import { TrackingService } from './src/services/tracking/TrackingService';
+import { SchedulerService } from './src/services/scheduler/SchedulerService';
+import { AnalyticsService } from './src/services/analytics/AnalyticsService';
+import { SummaryService } from './src/services/summary/SummaryService';
+import { SessionService } from './src/services/session/SessionService';
+import { TagIndexService } from './src/services/tags/TagIndexService';
 
 const VIEW_TYPE_STUDY_FLOW = 'study-flow-view';
 
@@ -45,6 +53,8 @@ interface StudyAnalyticsSettings {
     prorateWeeklyGoals: boolean; // Divide weekly goals by days remaining in the week
     darkenReflectionBackground: boolean; // Darken the background when adding reflections
     useCompactDesign: boolean; // Use a more compact design for the sidebar
+    showTagStatsInDaily?: boolean; // Show tracked tag breakdown in daily summary
+    simplifyContinuousUI?: boolean; // Hide non-essential controls in continuous mode
 }
 
 const DEFAULT_SETTINGS: StudyAnalyticsSettings = {
@@ -82,6 +92,8 @@ const DEFAULT_SETTINGS: StudyAnalyticsSettings = {
     prorateWeeklyGoals: false, // Divide weekly goals by days remaining in the week
     darkenReflectionBackground: false, // Darken the background when adding reflections
     useCompactDesign: false, // Use a more compact design for the sidebar
+    showTagStatsInDaily: false,
+    simplifyContinuousUI: false,
 };
 
 interface DistractionNote {
@@ -311,7 +323,7 @@ class StudySession {
 
 class StudyFlowView extends ItemView {
     plugin: StudyAnalyticsPlugin;
-    timeLeft: number;
+    timeLeft: number; // retained for compatibility; sourced from timer service
     isRunning: boolean;
     isBreak: boolean;
     pomodoroCount: number;
@@ -326,9 +338,13 @@ class StudyFlowView extends ItemView {
     endTimeDisplay: HTMLElement;
     stopwatchToggle: HTMLButtonElement;
     startButton: HTMLButtonElement;
+    newSessionButton: HTMLButtonElement;
+    endButton: HTMLButtonElement;
     categorySelect: HTMLSelectElement;
     difficultySlider: HTMLInputElement;
+    difficultySectionEl: HTMLDivElement;
     notesArea: HTMLTextAreaElement;
+    notesSectionEl: HTMLDivElement;
     distractionInput: HTMLInputElement;
     dailyTimeDisplay: HTMLElement;
     statusBarItem: HTMLElement;
@@ -366,11 +382,11 @@ class StudyFlowView extends ItemView {
 
         // Daily Total Study Time Display
         const dailyStatsContainer = container.createEl('div', {
-            cls: 'study-flow-daily-stats'
+            cls: 'study-flow-daily-stats study-flow-daily-box'
         });
         this.dailyTimeDisplay = dailyStatsContainer.createEl('div', {
             cls: 'study-flow-daily-time',
-            text: 'Today\'s Study Time: Loading...'
+            text: 'Today’s study time: Loading...'
         });
 
         // Initial update and regular updates
@@ -386,13 +402,13 @@ class StudyFlowView extends ItemView {
 
         // Stopwatch Toggle
         const stopwatchDiv = container.createEl('div', { cls: 'stopwatch-section' });
-        let toggleText = 'Switch to Stopwatch';
+        let toggleText = 'Switch to stopwatch';
         
         if (this.isStopwatch) {
             toggleText = this.plugin.settings.useCompactDesign ? 
                 'Switch to Rec. Sess.' : 'Switch to Recurring Sessions';
         } else if (this.isRecurringSession) {
-            toggleText = 'Switch to Pomodoro';
+            toggleText = 'Switch to pomodoro';
         }
         
         this.stopwatchToggle = stopwatchDiv.createEl('button', {
@@ -412,11 +428,11 @@ class StudyFlowView extends ItemView {
         this.startButton.onclick = () => this.toggleTimer();
 
         // New Session Button
-        const newSessionButton = controls.createEl('button', {
+        this.newSessionButton = controls.createEl('button', {
             text: this.plugin.settings.useCompactDesign ? 'New' : 'New Session',
             cls: 'control-button new-session-button'
         });
-        newSessionButton.onclick = async () => {
+        this.newSessionButton.onclick = async () => {
             if (this.plugin.currentSession) {
                 this.plugin.currentSession.notes = this.notesArea.value;
                 if (this.plugin.settings.showDifficulty) {
@@ -462,11 +478,19 @@ class StudyFlowView extends ItemView {
         };
 
         // End Button
-        const endButton = controls.createEl('button', {
+        this.endButton = controls.createEl('button', {
             text: 'End',
             cls: 'control-button end-button'
         });
-        endButton.onclick = () => this.plugin.endCurrentSession();
+        this.endButton.onclick = () => this.plugin.endCurrentSession();
+
+        // If tracking without explicit sessions, simplify UI: only Pause/Start, no New/End
+        if (this.plugin.settings.trackWithoutSession) {
+            this.newSessionButton.toggleAttribute('disabled', true);
+            this.newSessionButton.style.display = 'none';
+            this.endButton.toggleAttribute('disabled', true);
+            this.endButton.style.display = 'none';
+        }
 
         // Category Selection
         const categoryDiv = container.createEl('div', { cls: 'category-section' });
@@ -480,9 +504,9 @@ class StudyFlowView extends ItemView {
 
         // Difficulty Slider
         if (this.plugin.settings.showDifficulty) {
-            const difficultyDiv = container.createEl('div', { cls: 'difficulty-section' });
-            difficultyDiv.createEl('label', { text: 'Difficulty: ' });
-            this.difficultySlider = difficultyDiv.createEl('input', {
+            this.difficultySectionEl = container.createEl('div', { cls: 'difficulty-section' });
+            this.difficultySectionEl.createEl('label', { text: 'Difficulty: ' });
+            this.difficultySlider = this.difficultySectionEl.createEl('input', {
                 type: 'range',
                 attr: {
                     min: '1',
@@ -494,9 +518,9 @@ class StudyFlowView extends ItemView {
         }
 
         // Session Notes
-        const notesDiv = container.createEl('div', { cls: 'notes-section' });
-        notesDiv.createEl('label', { text: 'Session Notes:' });
-        this.notesArea = notesDiv.createEl('textarea', {
+        this.notesSectionEl = container.createEl('div', { cls: 'notes-section' });
+        this.notesSectionEl.createEl('label', { text: 'Session notes:' });
+        this.notesArea = this.notesSectionEl.createEl('textarea', {
             cls: 'notes-area',
             attr: { rows: '4', placeholder: 'Enter session notes here...' }
         });
@@ -529,6 +553,12 @@ class StudyFlowView extends ItemView {
                 this.reportDistraction();
             }
         });
+
+        // Simplify UI in continuous mode if enabled
+        if (this.plugin.settings.trackWithoutSession && this.plugin.settings.simplifyContinuousUI) {
+            if (this.difficultySectionEl) this.difficultySectionEl.style.display = 'none';
+            if (this.notesSectionEl) this.notesSectionEl.style.display = 'none';
+        }
         
         distractionButton.onclick = () => this.reportDistraction();
 
@@ -559,7 +589,7 @@ class StudyFlowView extends ItemView {
             if (!this.dailyTimeDisplay.querySelector('.daily-time-total')) {
                 this.dailyTimeDisplay.empty();
                 this.dailyTimeDisplay.createEl('div', {
-                    text: `Today's Study Time: ${hours}h ${minutes}m`,
+                    text: `Today’s study time: ${hours}h ${minutes}m`,
                     cls: 'daily-time-total'
                 });
                 
@@ -579,7 +609,7 @@ class StudyFlowView extends ItemView {
                 // Just update the text content of existing elements
                 const totalTimeEl = this.dailyTimeDisplay.querySelector('.daily-time-total');
                 if (totalTimeEl) {
-                    totalTimeEl.textContent = `Today's Study Time: ${hours}h ${minutes}m`;
+                    totalTimeEl.textContent = `Today’s study time: ${hours}h ${minutes}m`;
                 }
             }
             
@@ -678,7 +708,7 @@ class StudyFlowView extends ItemView {
             }
         } catch (error) {
             console.error('Error calculating total study time:', error);
-            this.dailyTimeDisplay.setText("Today's Study Time: Error");
+            this.dailyTimeDisplay.setText('Today’s study time: Error');
         }
     }
     
@@ -753,7 +783,8 @@ class StudyFlowView extends ItemView {
 
     updateTimerDisplay(): void {
         if (this.isStopwatch) {
-            const totalSeconds = Math.floor(this.stopwatchElapsed / 1000);
+            const svc = this.plugin.timerService;
+            const totalSeconds = Math.floor((svc ? svc.getState().elapsedMs : this.stopwatchElapsed) / 1000);
             const minutes = Math.floor(totalSeconds / 60);
             const seconds = totalSeconds % 60;
             const display = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
@@ -766,7 +797,8 @@ class StudyFlowView extends ItemView {
             
             if (goal) {
                 // Berechne Minuten und Sekunden aus goalTimeRemaining (als Integer)
-                const totalSeconds = Math.floor(this.goalTimeRemaining);
+                const svc = this.plugin.timerService;
+                const totalSeconds = Math.floor(svc ? svc.getState().goalRemainingSec : this.goalTimeRemaining);
                 const minutes = Math.floor(totalSeconds / 60);
                 const seconds = Math.floor(totalSeconds % 60);
                 const display = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
@@ -794,8 +826,11 @@ class StudyFlowView extends ItemView {
                 this.endTimeDisplay.textContent = "No goal set";
             }
         } else {
-            const minutes = Math.floor(this.timeLeft / 60);
-            const seconds = this.timeLeft % 60;
+            // Pomodoro: derive from timerService if present
+            const svc = this.plugin.timerService;
+            const remaining = svc ? svc.getState().remainingSec : this.timeLeft;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
             const display = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
             this.timerDisplay.textContent = display;
 
@@ -836,9 +871,16 @@ class StudyFlowView extends ItemView {
         this.timerStartTime = null;
         this.lastUpdate = null;
 
-        if (this.interval) {
-            clearInterval(this.interval);
-            this.interval = null;
+        if (this.interval) { clearInterval(this.interval); this.interval = null; }
+        const svc = this.plugin.timerService;
+        if (svc) {
+            let mode: TimerMode = 'pomodoro';
+            if (this.isStopwatch) mode = 'stopwatch';
+            else if (this.isRecurringSession) mode = 'recurring';
+            svc.setMode(mode);
+            if (mode === 'pomodoro') svc.setPomodoroSeconds(this.timeLeft);
+            if (mode === 'recurring') svc.setRecurringGoalSeconds(this.goalTimeRemaining);
+            svc.reset();
         }
 
         this.startButton.textContent = 'Start';
@@ -869,100 +911,8 @@ class StudyFlowView extends ItemView {
     }
     
     changeCategory(newCategory: string): void {
-        // Only change if different from current category
-        if (this.plugin.currentSession && this.plugin.currentSession.category !== newCategory) {
-            // Save current session
-            this.plugin.currentSession.notes = this.notesArea.value;
-            if (this.plugin.settings.showDifficulty) {
-                this.plugin.currentSession.difficulty = parseInt(this.difficultySlider.value);
-            }
-            
-            const wasRunning = this.isRunning;
-            
-            // Remember timer state for continuity
-            const timeLeftBackup = this.timeLeft;
-            const stopwatchElapsedBackup = this.stopwatchElapsed;
-            const isStopwatchBackup = this.isStopwatch;
-            const isRecurringSessionBackup = this.isRecurringSession;
-            
-            // Wenn wir im Recurring-Session-Modus sind, aktualisiere die Zeit für die aktuelle Kategorie
-            if (isRecurringSessionBackup && !this.plugin.currentSession.isBreak) {
-                const category = this.plugin.currentSession.category;
-                const sessionDuration = this.plugin.currentSession.getDuration() / 60; // Minuten zu Stunden
-                
-                // Wenn es ein Ziel für diese Kategorie gibt, aktualisiere den Fortschritt
-                if (this.plugin.settings.recurringSessionGoals[category]) {
-                    const goal = this.plugin.settings.recurringSessionGoals[category];
-                    if (!goal.timeSpent) goal.timeSpent = 0;
-                    
-                    // Zeit hinzufügen
-                    goal.timeSpent += sessionDuration;
-                    
-                    // Prüfen, ob das Ziel erreicht wurde
-                    if (!goal.achieved && goal.timeSpent >= goal.timeGoal) {
-                        goal.achieved = true;
-                        new Notice(`Goal for ${category} reached!`);
-                    }
-                    
-                    // Einstellungen speichern
-                    this.plugin.saveSettings();
-                }
-            }
-            
-            if (wasRunning) {
-                this.breakTimer();
-            }
-            
-            const sessionData = this.plugin.currentSession.end();
-            this.plugin.saveSessionToFile(sessionData);
-            
-            // Start new session with new category
-            this.plugin.startNewSession(newCategory);
-            this.categorySelect.value = newCategory;
-            
-            // Reset difficulty slider if shown
-            if (this.difficultySlider) {
-                this.difficultySlider.value = '1';
-            }
-            
-            // Keep notes if continuing same work in different category
-            // this.notesArea.value = ''; // Uncomment to clear notes on category change
-            
-            // Restore timer state for continuity
-            if (isStopwatchBackup) {
-                this.isStopwatch = true;
-                this.isRecurringSession = false;
-                this.stopwatchElapsed = stopwatchElapsedBackup;
-            } else if (isRecurringSessionBackup) {
-                this.isStopwatch = false;
-                this.isRecurringSession = true;
-                
-                // Recalculate goal time remaining for the new category
-                if (this.plugin.settings.recurringSessionGoals[newCategory]) {
-                    const goal = this.plugin.settings.recurringSessionGoals[newCategory];
-                    // Setze immer auf die volle Zielzeit, nicht die verbleibende
-                    this.goalTimeRemaining = Math.floor(goal.timeGoal * 3600);
-                } else {
-                    this.goalTimeRemaining = 0;
-                }
-                
-                // Sofort die Timerdarstellung aktualisieren
-                this.updateTimerDisplay();
-                
-                // Sofort die Zielanzeige aktualisieren
-                this.updateDailyTime();
-            } else {
-                this.isStopwatch = false;
-                this.isRecurringSession = false;
-                this.timeLeft = timeLeftBackup;
-            }
-            
-            if (wasRunning) {
-                this.startTimer();
-            }
-            
-            new Notice(`Category changed to ${newCategory}`);
-        }
+        if (!this.plugin.sessionService) return;
+        this.plugin.sessionService.changeCategory(this as any, newCategory);
     }
 
     startTimer(): void {
@@ -975,8 +925,23 @@ class StudyFlowView extends ItemView {
             this.plugin.currentSession.resume();
         }
 
+        // Configure timer service based on mode
+        const svc = this.plugin.timerService;
+        if (svc) {
+            let mode: TimerMode = 'pomodoro';
+            if (this.isStopwatch) mode = 'stopwatch';
+            else if (this.isRecurringSession) mode = 'recurring';
+            svc.setMode(mode);
+            if (mode === 'pomodoro') {
+                svc.setPomodoroSeconds(this.timeLeft);
+            } else if (mode === 'recurring') {
+                svc.setRecurringGoalSeconds(this.goalTimeRemaining);
+            }
+            svc.start();
+        }
+
         this.isRunning = true;
-        this.startButton.textContent = 'Break';
+        this.startButton.textContent = 'Pause';
 
         if (this.isStopwatch) {
             if (!this.stopwatchStartTime) {
@@ -1085,15 +1050,10 @@ class StudyFlowView extends ItemView {
             this.plugin.currentSession.break();
         }
 
-        if (this.interval) {
-            window.clearInterval(this.interval);
-            this.interval = null;
-        }
+        if (this.interval) { window.clearInterval(this.interval); this.interval = null; }
 
-        if (!this.isStopwatch) {
-            const now = Date.now();
-            this.timeLeft = Math.max(0, Math.ceil((this.endTime - now) / 1000));
-        }
+        const svc = this.plugin.timerService;
+        if (svc) svc.pause();
 
         this.endTimeDisplay.textContent = '';
         this.updateDailyTime();
@@ -1143,6 +1103,12 @@ class StudyFlowView extends ItemView {
                 this.categorySelect.value = '~Break~';
 
                 if (this.plugin.settings.autoStartBreaks) {
+                    // configure timer service for break interval
+                    const svc = this.plugin.timerService;
+                    if (svc) {
+                        svc.setMode('pomodoro');
+                        svc.setPomodoroSeconds(this.timeLeft);
+                    }
                     this.startTimer();
                 }
             }
@@ -1178,6 +1144,11 @@ class StudyFlowView extends ItemView {
                 const category = this.plugin.settings.categories.find(c => c !== '~Break~') || 'Study';
                 this.plugin.startNewSession(category);
                 this.categorySelect.value = category;
+                const svc = this.plugin.timerService;
+                if (svc) {
+                    svc.setMode('pomodoro');
+                    svc.setPomodoroSeconds(this.timeLeft);
+                }
                 this.startTimer();
             }
         }
@@ -1207,7 +1178,7 @@ class StudyFlowView extends ItemView {
 
     addReflection(): void {
         const modal = new Modal(this.app);
-        modal.titleEl.setText('Add Reflection');
+        modal.titleEl.setText('Add reflection');
 
         // Add a class to the modal for styling when background blur is enabled
         if (this.plugin.settings.darkenReflectionBackground) {
@@ -1292,7 +1263,7 @@ class StudyFlowView extends ItemView {
             if (this.plugin.settings.enableRecurringSessions) {
                 this.isStopwatch = false;
                 this.isRecurringSession = true;
-                this.stopwatchToggle.textContent = 'Switch to pomodoro';
+            this.stopwatchToggle.textContent = 'Switch to pomodoro';
                 
                 // Beim Wechsel in den Recurring-Sessions-Modus, setze die volle Zielzeit für die aktuelle Kategorie
                 if (this.plugin.settings.recurringSessionGoals[currentCategory]) {
@@ -1312,6 +1283,17 @@ class StudyFlowView extends ItemView {
             this.stopwatchToggle.textContent = 'Switch to stopwatch';
         }
         
+        // Sync timer service to new mode
+        const svc = this.plugin.timerService;
+        if (svc) {
+            let mode: TimerMode = 'pomodoro';
+            if (this.isStopwatch) mode = 'stopwatch';
+            else if (this.isRecurringSession) mode = 'recurring';
+            svc.setMode(mode);
+            if (mode === 'pomodoro') svc.setPomodoroSeconds(this.timeLeft);
+            if (mode === 'recurring') svc.setRecurringGoalSeconds(this.goalTimeRemaining);
+        }
+
         this.resetSession();
         this.updateCategorySelect();
         
@@ -1438,7 +1420,7 @@ class StudyFlowSettingTab extends PluginSettingTab {
             const setting = new Setting(containerEl)
                 .setName(category);
 
-            if (category !== 'Break') {
+            if (category !== '~Break~') {
                 setting.addButton(button => button
                     .setIcon('trash')
                     .onClick(async () => {
@@ -1451,7 +1433,7 @@ class StudyFlowSettingTab extends PluginSettingTab {
 
 
         new Setting(containerEl)
-            .setName('Notes Folder')
+            .setName('Notes folder')
             .setDesc('Folder for session notes')
             .addText(text => text
                 .setValue(this.plugin.settings.notesFolder)
@@ -1488,6 +1470,8 @@ class StudyFlowSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
+        new Setting(containerEl).setName('UI').setHeading();
+
         new Setting(containerEl)
             .setName('Show difficulty slider')
             .addToggle(toggle => toggle
@@ -1521,6 +1505,8 @@ class StudyFlowSettingTab extends PluginSettingTab {
                         view.containerEl.classList.toggle('study-analytics-compact', value);
                     }
                 }));
+
+        new Setting(containerEl).setName('Tracking').setHeading();
 
         new Setting(containerEl)
             .setName('Track modified files')
@@ -1610,6 +1596,8 @@ class StudyFlowSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
                 
+        new Setting(containerEl).setName('Analytics').setHeading();
+
         new Setting(containerEl)
             .setName('Track tagged notes')
             .setDesc('Track notes with specific tags in summaries')
@@ -1619,6 +1607,20 @@ class StudyFlowSettingTab extends PluginSettingTab {
                     this.plugin.settings.trackTaggedNotes = value;
                     await this.plugin.saveSettings();
                 }));
+
+        if (this.plugin.settings.trackTaggedNotes) {
+            new Setting(containerEl)
+                .setName('Include tag breakdown in daily summary')
+                .setDesc('Adds created/modified note lists per tracked tag to daily summaries')
+                .addToggle(toggle => toggle
+                    .setValue(this.plugin.settings.showTagStatsInDaily || false)
+                    .onChange(async (value) => {
+                        this.plugin.settings.showTagStatsInDaily = value;
+                        await this.plugin.saveSettings();
+                    }));
+        }
+
+        new Setting(containerEl).setName('Automation').setHeading();
 
         new Setting(containerEl)
             .setName('Reset timer on new session')
@@ -1638,6 +1640,32 @@ class StudyFlowSettingTab extends PluginSettingTab {
                 .onChange(async (value) => {
                     this.plugin.settings.autoTrackSessionOnStartup = value;
                     await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Track without sessions (continuous)')
+            .setDesc('Tracks continuously while Obsidian is open (caps at 23:59). Hides New/End; Start acts as Pause/Resume.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.trackWithoutSession)
+                .onChange(async (value) => {
+                    this.plugin.settings.trackWithoutSession = value;
+                    await this.plugin.saveSettings();
+                    new Notice('Tracking mode updated');
+                }));
+
+        new Setting(containerEl)
+            .setName('Simplify UI in continuous mode')
+            .setDesc('Hide difficulty and notes sections while continuous tracking is enabled')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.simplifyContinuousUI || false)
+                .onChange(async (value) => {
+                    this.plugin.settings.simplifyContinuousUI = value;
+                    await this.plugin.saveSettings();
+                    const view = this.plugin.getStudyFlowView();
+                    if (view && this.plugin.settings.trackWithoutSession) {
+                        if (view.difficultySectionEl) view.difficultySectionEl.style.display = value ? 'none' : '';
+                        if (view.notesSectionEl) view.notesSectionEl.style.display = value ? 'none' : '';
+                    }
                 }));
                 
         new Setting(containerEl)
@@ -1672,7 +1700,7 @@ class StudyFlowSettingTab extends PluginSettingTab {
                 
         // Folder-Category mapping
         if (this.plugin.settings.autoSetCategoryByFolder) {
-            containerEl.createEl('h4', { text: 'Folder-Category Mappings' });
+            new Setting(containerEl).setName('Folder–category mappings').setHeading();
             
             // Add existing mappings
             for (const folderPath in this.plugin.settings.folderCategoryMappings) {
@@ -1694,7 +1722,7 @@ class StudyFlowSettingTab extends PluginSettingTab {
             
             // Add new mapping
             const newMappingSetting = new Setting(containerEl)
-                .setName('Add Folder-Category Mapping')
+                .setName('Add folder–category mapping')
                 .setDesc('Map a folder path to a specific category');
                 
             let folderPathInput: HTMLInputElement;
@@ -1740,7 +1768,7 @@ class StudyFlowSettingTab extends PluginSettingTab {
         }
 
         // Tags to track
-        containerEl.createEl('h4', { text: 'Tags to Track' });
+        new Setting(containerEl).setName('Tags to track').setHeading();
         
         const tagsToTrackSetting = new Setting(containerEl)
             .setName('Tags to Track')
@@ -1784,7 +1812,7 @@ class StudyFlowSettingTab extends PluginSettingTab {
                         if (!value && view.isRecurringSession) {
                             view.isRecurringSession = false;
                             view.isStopwatch = false;
-                            view.stopwatchToggle.textContent = 'Switch to Stopwatch';
+                            view.stopwatchToggle.textContent = 'Switch to stopwatch';
                             view.resetSession();
                         }
                     }
@@ -1796,7 +1824,7 @@ class StudyFlowSettingTab extends PluginSettingTab {
         // Only show recurring goal settings if enabled
         if (this.plugin.settings.enableRecurringSessions) {
             new Setting(containerEl)
-                .setName('Prorate Weekly Goals')
+            .setName('Prorate weekly goals')
                 .setDesc('Divide weekly goals by days remaining in the week, to show how much is needed per day')
                 .addToggle(toggle => toggle
                     .setValue(this.plugin.settings.prorateWeeklyGoals)
@@ -1811,7 +1839,7 @@ class StudyFlowSettingTab extends PluginSettingTab {
                         }
                     }));
 
-            containerEl.createEl('h4', { text: 'Recurring Goals' });
+            new Setting(containerEl).setName('Recurring goals').setHeading();
             
             // For each category, add a goal setting
             this.plugin.settings.categories.forEach((category) => {
@@ -1919,6 +1947,13 @@ export default class StudyAnalyticsPlugin extends Plugin {
     statusBarItem: HTMLElement;
     sessionsData: SessionsData = { sessions: [], lastUpdated: new Date().toISOString() };
     sessionsFilePath: string = '';
+    timerService: TimerService | null = null;
+    trackingService: TrackingService | null = null;
+    schedulerService: SchedulerService | null = null;
+    analyticsService: AnalyticsService | null = null;
+    summaryService: SummaryService | null = null;
+    sessionService: SessionService | null = null;
+    tagIndexService: TagIndexService | null = null;
 
     async onload() {
         // Load settings
@@ -1935,6 +1970,30 @@ export default class StudyAnalyticsPlugin extends Plugin {
         
         // Show a notice about the storage change
         new Notice("Study Analytics now uses consolidated storage for all sessions");
+
+        // Initialize services
+        this.timerService = new TimerService({
+            pomodoroSec: this.settings.pomodoroTime * 60,
+            shortBreakSec: this.settings.shortBreakTime * 60,
+            longBreakSec: this.settings.longBreakTime * 60,
+            longBreakInterval: this.settings.longBreakInterval,
+        }, 'pomodoro', {
+            onTick: () => {
+                const view = this.getStudyFlowView();
+                view?.updateTimerDisplay();
+            },
+            onComplete: () => {
+                const view = this.getStudyFlowView();
+                if (view) view.completeTimer();
+            }
+        });
+
+        this.trackingService = new TrackingService(this);
+        this.schedulerService = new SchedulerService(this);
+        this.analyticsService = new AnalyticsService(this);
+        this.summaryService = new SummaryService(this);
+        this.sessionService = new SessionService(this);
+        this.tagIndexService = new TagIndexService(this);
 
         // Register view
         this.registerView(
@@ -1961,82 +2020,10 @@ export default class StudyAnalyticsPlugin extends Plugin {
             this.activateView();
         });
 
-        // Register events for tracking
-
-        // Track file modifications
-        if (this.settings.trackModifiedFiles || this.settings.trackCreatedNotes) {
-        this.registerEvent(
-                this.app.vault.on('modify', (file) => {
-                    if (this.currentSession && !this.currentSession.isBreak) {
-                        // Only track files that match the focus path (if set)
-                        if (this.settings.focusPath && !file.path.startsWith(this.settings.focusPath)) {
-                            return;
-                        }
-                        
-                            this.currentSession.trackModifiedFile(file.path);
-                        
-                        // Auto-update category if enabled
-                        if (this.settings.autoSetCategoryByFolder) {
-                            this.updateCategoryByFolder(file.path);
-                        }
-                        
-                        // Track word count if enabled
-                        if (this.settings.trackWordCount && file instanceof TFile && file.extension === 'md') {
-                            this.app.vault.read(file).then(content => {
-                            const wordCount = this.countWords(content);
-                                this.currentSession?.updateWordCount(file.path, wordCount);
-                                
-                                // Track links created
-                                const fileCache = this.app.metadataCache.getFileCache(file);
-                                if (fileCache && fileCache.links) {
-                                    this.currentSession?.updateLinkCount(file.path, fileCache.links.length);
-                                }
-                            });
-                        }
-                    }
-                })
-            );
-        }
-        
-        // Track newly created files
-        if (this.settings.trackCreatedNotes) {
-            this.registerEvent(
-                this.app.vault.on('create', (file) => {
-                    if (this.currentSession && !this.currentSession.isBreak && file instanceof TFile) {
-                        // Only track markdown files or all files based on settings
-                        if (file.extension === 'md') {
-                            this.currentSession.trackCreatedFile(file.path);
-                            
-                            // Auto-update category if enabled
-                        if (this.settings.autoSetCategoryByFolder) {
-                            this.updateCategoryByFolder(file.path);
-                        }
-                    }
-                }
-            })
-        );
-        }
-        
-        // Track opened files
-        if (this.settings.trackOpenedFiles) {
-        this.registerEvent(
-            this.app.workspace.on('file-open', (file) => {
-                    if (this.currentSession && !this.currentSession.isBreak && file) {
-                        // Only track files that match the focus path (if set)
-                        if (this.settings.focusPath && !file.path.startsWith(this.settings.focusPath)) {
-                            return;
-                        }
-                        
-                        this.currentSession.trackOpenedFile(file.path);
-                        
-                        // Auto-update category if enabled
-                        if (this.settings.autoSetCategoryByFolder) {
-                            this.updateCategoryByFolder(file.path);
-                    }
-                }
-            })
-        );
-        }
+        // Register tracking events via service
+        this.trackingService.register();
+        // Register tag index caching
+        await this.tagIndexService.register();
 
         // Add settings tab
         this.addSettingTab(new StudyFlowSettingTab(this.app, this));
@@ -2065,19 +2052,19 @@ export default class StudyAnalyticsPlugin extends Plugin {
         this.addCommand({
             id: 'create-daily-summary',
             name: 'Create daily study summary',
-            callback: () => this.createDailySummary()
+            callback: () => this.createDailySummaryUsingServices()
         });
 
         this.addCommand({
             id: 'create-weekly-summary',
             name: 'Create weekly study summary',
-            callback: () => this.createWeeklySummary()
+            callback: () => this.createWeeklySummaryUsingServices()
         });
 
         // Command to toggle timer state
         this.addCommand({
             id: 'toggle-timer',
-            name: 'Toggle timer (Start/Break)',
+            name: 'Toggle timer (start/pause)',
             callback: () => {
                 const view = this.getStudyFlowView();
                 if (view) {
@@ -2086,44 +2073,11 @@ export default class StudyAnalyticsPlugin extends Plugin {
             }
         });
         
-        // Set up daily midnight reset for recurring goals
-        this.registerInterval(
-            window.setInterval(async () => {
-                const now = new Date();
-                // Check if it's midnight (within a minute to avoid missing it)
-                if (now.getHours() === 0 && now.getMinutes() < 1) {
-                    // Reset daily goals
-                    await this.resetRecurringGoals('daily');
-                    
-                    // Create daily summary if enabled
-                    if (this.settings.autoDailySummary) {
-                        // Get yesterday's date
-                        const yesterday = new Date(now);
-                        yesterday.setDate(yesterday.getDate() - 1);
-                        const yesterdayString = yesterday.toISOString().split('T')[0];
-                        
-                        await this.createDailySummary(yesterdayString);
-                    }
-                }
-                
-                // Weekly reset on the configured day
-                if (this.settings.enableWeeklySummary && 
-                    this.settings.autoWeeklySummary && 
-                    now.getDay() === this.settings.weeklySummaryDay && 
-                    now.getHours() === 0 && 
-                    now.getMinutes() < 1) {
-                    
-                    // Reset weekly goals
-                    await this.resetRecurringGoals('weekly');
-                    
-                    // Create weekly summary
-                    await this.checkWeeklySummary();
-                }
-            }, 60000) // Check every minute
-        );
+        // Register scheduler
+        this.schedulerService.register();
         
-        // Start auto tracking if enabled
-        if (this.settings.autoTrackSessionOnStartup) {
+        // Start auto tracking if enabled or continuous mode is enabled
+        if (this.settings.autoTrackSessionOnStartup || this.settings.trackWithoutSession) {
             setTimeout(() => {
                 this.startAutoTracking();
             }, 2000); // Delay to ensure app is fully loaded
@@ -2230,6 +2184,10 @@ export default class StudyAnalyticsPlugin extends Plugin {
     }
 
     async createDailySummary(date?: string) {
+        // New service-based implementation
+        return await this.createDailySummaryUsingServices(date);
+        // Legacy code below is kept for now but never executed
+        // It will be removed after full migration is validated
         const summaryDate = date || new Date().toISOString().split('T')[0];
         const summaryFileName = `${summaryDate}_daily_summary.md`;
         const summaryFilePath = `${this.settings.notesFolder}/${summaryFileName}`;
@@ -2300,6 +2258,10 @@ export default class StudyAnalyticsPlugin extends Plugin {
             const totalTimeHours = Math.floor((totalStudyTime + totalBreakTime) / 60);
             const totalTimeMinutes = (totalStudyTime + totalBreakTime) % 60;
 
+            // Determine created/modified notes (markdown files only)
+            const createdNotesList = Array.from(createdFiles).filter(f => f.endsWith('.md'));
+            const modifiedNotesList = Array.from(modifiedFiles).filter(f => f.endsWith('.md'));
+
             // Create the summary with inline frontmatter
             let summaryContent = `# Daily Study Summary - ${summaryDate}\n\n`;
             summaryContent += `Study time:: ${studyHours}h ${studyMinutes}m\n`;
@@ -2310,6 +2272,8 @@ export default class StudyAnalyticsPlugin extends Plugin {
             summaryContent += `Created files:: ${totalCreatedFiles}\n`;
             summaryContent += `Created links:: ${totalCreatedLinks}\n`;
             summaryContent += `Words written:: ${totalWordCount}\n\n`;
+            summaryContent += `Created notes:: ${createdNotesList.length}\n`;
+            summaryContent += `Modified notes:: ${modifiedNotesList.length}\n\n`;
 
             // Daily statistics
             summaryContent += `## 📊 Daily statistics\n`;
@@ -2330,6 +2294,24 @@ export default class StudyAnalyticsPlugin extends Plugin {
             if (modifiedFiles.size > 0) {
                 summaryContent += `## 📝 Modified Files Overview\n`;
                 modifiedFiles.forEach(file => {
+                    summaryContent += `- [[${file}|${file.split('/').pop()}]]\n`;
+                });
+                summaryContent += '\n';
+            }
+
+            // Created Notes Overview (Markdown only)
+            if (createdNotesList.length > 0) {
+                summaryContent += `## 📔 Created Notes\n`;
+                createdNotesList.forEach(file => {
+                    summaryContent += `- [[${file}|${file.split('/').pop()}]]\n`;
+                });
+                summaryContent += '\n';
+            }
+            
+            // Modified Notes Overview (Markdown only)
+            if (modifiedNotesList.length > 0) {
+                summaryContent += `## ✏️ Modified Notes\n`;
+                modifiedNotesList.forEach(file => {
                     summaryContent += `- [[${file}|${file.split('/').pop()}]]\n`;
                 });
                 summaryContent += '\n';
@@ -2370,6 +2352,52 @@ export default class StudyAnalyticsPlugin extends Plugin {
                     }
                 });
                 summaryContent += '\n';
+            }
+
+            // Tracked tags breakdown (optional)
+            if (this.settings.trackTaggedNotes && (this.settings.showTagStatsInDaily || false) && this.settings.tagsToTrack && this.settings.tagsToTrack.length > 0) {
+                const createdByTag: Record<string, string[]> = {};
+                const modifiedByTag: Record<string, string[]> = {};
+                this.settings.tagsToTrack.forEach(tag => { createdByTag[tag] = []; modifiedByTag[tag] = []; });
+
+                const appendByTags = (files: string[], target: Record<string, string[]>) => {
+                    for (const file of files) {
+                        const tfile = this.app.vault.getAbstractFileByPath(file);
+                        if (tfile instanceof TFile) {
+                            const cache = this.app.metadataCache.getFileCache(tfile);
+                            if (cache && cache.tags) {
+                                const fileTags = cache.tags.map(t => t.tag);
+                                for (const tag of this.settings.tagsToTrack) {
+                                    if (fileTags.includes(tag)) {
+                                        target[tag].push(file);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                appendByTags(createdNotesList, createdByTag);
+                appendByTags(modifiedNotesList, modifiedByTag);
+
+                summaryContent += `## 🏷️ Tracked Tags (Daily)\n`;
+                for (const tag of this.settings.tagsToTrack) {
+                    const created = createdByTag[tag] || [];
+                    const modified = modifiedByTag[tag] || [];
+                    summaryContent += `### ${tag} — Created: ${created.length}, Modified: ${modified.length}\n`;
+                    if (created.length > 0) {
+                        summaryContent += `- Created:\n`;
+                        created.forEach(f => summaryContent += `  - [[${f}|${f.split('/').pop()}]]\n`);
+                    }
+                    if (modified.length > 0) {
+                        summaryContent += `- Modified:\n`;
+                        modified.forEach(f => summaryContent += `  - [[${f}|${f.split('/').pop()}]]\n`);
+                    }
+                    if (created.length === 0 && modified.length === 0) {
+                        summaryContent += `- No notes with this tag changed today\n`;
+                    }
+                    summaryContent += `\n`;
+                }
             }
 
             // Individual Sessions
@@ -2536,6 +2564,10 @@ export default class StudyAnalyticsPlugin extends Plugin {
     }
     
     async createWeeklySummary() {
+        // New service-based implementation
+        return await this.createWeeklySummaryUsingServices();
+        // Legacy code below is kept for now but never executed
+        // It will be removed after full migration is validated
         try {
             // Determine the start and end dates of the current week
             const now = new Date();
@@ -3053,7 +3085,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
     
     // Start auto-tracking when Obsidian opens
     startAutoTracking(): void {
-        if (!this.currentSession && this.settings.autoTrackSessionOnStartup) {
+        if (!this.currentSession && (this.settings.autoTrackSessionOnStartup || this.settings.trackWithoutSession)) {
             const defaultCategory = this.settings.categories.find(c => c !== '~Break~') || 'Study';
             this.startNewSession(defaultCategory);
             
@@ -3086,7 +3118,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
             
             if (lastWeeklySummaryDate !== todayStr) {
                 // Create the weekly summary
-                await this.createWeeklySummary();
+                await this.createWeeklySummaryUsingServices();
                 
                 // Update the last summary date
                 this.settings.lastWeeklySummary = todayStr;
@@ -3096,6 +3128,24 @@ export default class StudyAnalyticsPlugin extends Plugin {
     }
 
     async onunload() {
+        // Ensure any running session is saved on unload
+        if (this.currentSession) {
+            try {
+                const view = this.getStudyFlowView();
+                if (view) {
+                    this.currentSession.notes = view.notesArea.value;
+                    if (this.settings.showDifficulty) {
+                        this.currentSession.difficulty = parseInt(view.difficultySlider.value);
+                    }
+                }
+                const data = this.currentSession.end();
+                await this.saveSessionToFile(data);
+                this.currentSession = null;
+            } catch (e) {
+                console.error('Error saving session on unload', e);
+            }
+        }
+
         this.app.workspace
             .getLeavesOfType(VIEW_TYPE_STUDY_FLOW)
             .forEach(leaf => leaf.detach());
@@ -3321,6 +3371,70 @@ export default class StudyAnalyticsPlugin extends Plugin {
         } catch (error) {
             console.error("Error during migration:", error);
             new Notice("Error migrating session data");
+        }
+    }
+
+    // New service-based daily summary
+    async createDailySummaryUsingServices(date?: string) {
+        const summaryDate = date || new Date().toISOString().split('T')[0];
+        const summaryFileName = `${summaryDate}_daily_summary.md`;
+        const summaryFilePath = `${this.settings.notesFolder}/${summaryFileName}`;
+        try {
+            const daily = this.analyticsService.computeDaily(summaryDate);
+            if (daily.noData) {
+                new Notice(`No study sessions found for ${summaryDate}`);
+                return null;
+            }
+            const content = this.summaryService.renderDaily(daily);
+            if (!(await this.app.vault.adapter.exists(this.settings.notesFolder))) {
+                await this.app.vault.createFolder(this.settings.notesFolder);
+            }
+            await this.app.vault.adapter.write(summaryFilePath, content);
+            new Notice(`Daily summary for ${summaryDate} created`);
+            return {
+                studySessions: daily.studySessions,
+                breakSessions: daily.breakSessions,
+                totalStudyTime: daily.totalStudyTime,
+                totalBreakTime: daily.totalBreakTime,
+                totalPomodoros: daily.totalPomodoros,
+                totalDistractions: daily.totalDistractions,
+                totalTasks: daily.totalTasks,
+                totalWordCount: daily.totalWordCount,
+                avgDifficulty: daily.avgDifficulty,
+                modifiedFiles: Array.from(daily.modifiedFiles),
+                openedFiles: Array.from(daily.openedFiles),
+                createdFiles: Array.from(daily.createdFiles),
+                createdLinks: Array.from(daily.createdLinks),
+                createdNotes: daily.createdNotes,
+                modifiedNotes: daily.modifiedNotes,
+            };
+        } catch (error) {
+            console.error('Error creating daily summary:', error);
+            new Notice('Error creating daily summary');
+            return null;
+        }
+    }
+
+    // New service-based weekly summary
+    async createWeeklySummaryUsingServices() {
+        try {
+            const now = new Date();
+            const currentDay = now.getDay();
+            const diff = now.getDate() - currentDay + (currentDay === 0 ? -6 : 1);
+            const monday = new Date(now.setDate(diff));
+            monday.setHours(0,0,0,0);
+            const weekly = this.analyticsService.computeWeekly(monday);
+            const content = this.summaryService.renderWeekly(weekly);
+            const weeklyFileName = `${weekly.rangeStart}_weekly_summary.md`;
+            const weeklyFilePath = `${this.settings.notesFolder}/${weeklyFileName}`;
+            if (!(await this.app.vault.adapter.exists(this.settings.notesFolder))) {
+                await this.app.vault.createFolder(this.settings.notesFolder);
+            }
+            await this.app.vault.adapter.write(weeklyFilePath, content);
+            new Notice('Weekly summary created successfully!');
+        } catch (error) {
+            console.error('Error creating weekly summary:', error);
+            new Notice('Error creating weekly summary');
         }
     }
 }
