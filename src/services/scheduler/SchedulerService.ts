@@ -17,7 +17,7 @@ export class SchedulerService {
           if (this.plugin.settings.autoDailySummary) {
             const yesterday = new Date(now);
             yesterday.setDate(yesterday.getDate() - 1);
-            const d = yesterday.toISOString().split('T')[0];
+            const d = this.plugin.getDateString(yesterday);
             await this.plugin.createDailySummaryUsingServices(d);
           }
         }

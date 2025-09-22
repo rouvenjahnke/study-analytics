@@ -16,11 +16,22 @@ export class SessionService {
   }
 
   async changeCategory(view: any, newCategory: string) {
+    // If timer is not running, changing category must NOT create or save sessions.
+    // Just update the UI selection (and pending current session, if any) and refresh displays.
+    if (!view.isRunning) {
+      view.categorySelect.value = newCategory;
+      if (this.plugin.currentSession) this.plugin.currentSession.category = newCategory;
+      await view.updateDailyTime();
+      view.updateTimerDisplay();
+      return;
+    }
     if (!this.plugin.currentSession || this.plugin.currentSession.category === newCategory) return;
-    // Save current session state
-    this.plugin.currentSession.notes = view.notesArea.value;
-    if (this.plugin.settings.showDifficulty) {
-      this.plugin.currentSession.difficulty = parseInt(view.difficultySlider.value);
+    // Save current session state (only if running)
+    if (view.isRunning) {
+      this.plugin.currentSession.notes = view.notesArea.value;
+      if (this.plugin.settings.showDifficulty) {
+        this.plugin.currentSession.difficulty = parseInt(view.difficultySlider.value);
+      }
     }
 
     const wasRunning = view.isRunning;
@@ -47,12 +58,23 @@ export class SessionService {
 
     if (wasRunning) view.breakTimer();
 
-    const sessionData = this.plugin.currentSession.end();
-    await this.plugin.saveSessionToFile(sessionData);
+    // Only end and save if timer was running (i.e., an active session)
+    if (wasRunning) {
+      const sessionData = this.plugin.currentSession.end();
+      await this.plugin.saveSessionToFile(sessionData);
+    }
 
     // Start new session with new category
-    this.plugin.startNewSession(newCategory);
-    view.categorySelect.value = newCategory;
+    if (wasRunning) {
+      this.plugin.startNewSession(newCategory);
+      view.categorySelect.value = newCategory;
+    } else {
+      // If not running, just reflect UI change
+      view.categorySelect.value = newCategory;
+      await view.updateDailyTime();
+      view.updateTimerDisplay();
+      return;
+    }
 
     if (view.difficultySlider) view.difficultySlider.value = '1';
 
@@ -65,13 +87,16 @@ export class SessionService {
       view.isStopwatch = false;
       view.isRecurringSession = true;
       if (this.plugin.settings.recurringSessionGoals[newCategory]) {
-        const goal = this.plugin.settings.recurringSessionGoals[newCategory];
-        view.goalTimeRemaining = Math.floor(goal.timeGoal * 3600);
+        // Compute remaining time for the new category and sync timer service
+        const sec = await view.computeRemainingGoalSeconds(newCategory);
+        view.goalTimeRemaining = sec;
+        const svc = this.plugin.timerService;
+        if (svc) { svc.setMode('recurring'); svc.setRecurringGoalSeconds(sec); }
       } else {
         view.goalTimeRemaining = 0;
       }
+      await view.updateDailyTime();
       view.updateTimerDisplay();
-      view.updateDailyTime();
     } else {
       view.isStopwatch = false;
       view.isRecurringSession = false;

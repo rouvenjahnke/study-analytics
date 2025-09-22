@@ -97,8 +97,10 @@ export class TimerService {
       if (!this.state.startEpoch) return;
       const elapsedSec = Math.floor((now - this.state.startEpoch)/1000);
       if (elapsedSec > 0) {
-        this.state.goalRemainingSec = Math.max(0, this.state.goalRemainingSec - 1);
-        this.state.startEpoch = now; // step one-second down without drift
+        // Subtract the actual elapsed seconds to avoid drift (e.g., sleep)
+        this.state.goalRemainingSec = Math.max(0, this.state.goalRemainingSec - elapsedSec);
+        // Advance startEpoch by the consumed whole seconds, keep leftover ms
+        this.state.startEpoch = this.state.startEpoch + elapsedSec * 1000;
       }
       if (this.state.goalRemainingSec <= 0) {
         this.onRecurringComplete();
@@ -124,4 +126,3 @@ export class TimerService {
     this.cb.onComplete?.();
   }
 }
-

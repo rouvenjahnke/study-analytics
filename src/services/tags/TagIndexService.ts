@@ -1,5 +1,5 @@
 import type StudyAnalyticsPlugin from '../../../main';
-import type { TFile, CachedMetadata } from 'obsidian';
+import { TFile, type CachedMetadata } from 'obsidian';
 
 export class TagIndexService {
   private plugin: StudyAnalyticsPlugin;
@@ -99,4 +99,3 @@ export class TagIndexService {
     this.fileToTags.set(path, newTags);
   }
 }
-

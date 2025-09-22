@@ -55,6 +55,17 @@ interface StudyAnalyticsSettings {
     useCompactDesign: boolean; // Use a more compact design for the sidebar
     showTagStatsInDaily?: boolean; // Show tracked tag breakdown in daily summary
     simplifyContinuousUI?: boolean; // Hide non-essential controls in continuous mode
+    liveAnalyticsCategories?: string[]; // Up to 2 categories for live chart
+    resumePromptOnStartup?: boolean; // Offer to resume from live snapshot on startup
+    autoResumeWithoutPrompt?: boolean; // Immediately resume snapshot on startup (legacy)
+    autoResumeStartTimer?: boolean; // If auto-resuming, start timer immediately (legacy)
+    promptRestoreOnAbruptExit?: boolean; // Offer to restore previous session on startup if not ended cleanly
+    autosaveIntervalSec?: number; // Interval for live snapshot
+    jsonPollIntervalSec?: number; // Interval for re-reading sessions JSON
+    liveAnalyticsIncludeTags?: boolean; // Show tags breakdown in live analytics when enabled
+    liveAnalyticsRefreshSec?: number; // Refresh interval for live modal
+    timeZoneMode?: 'system' | 'utc' | 'fixed';
+    timeZoneOffsetMinutes?: number; // for fixed offset, minutes from UTC (e.g., +120)
 }
 
 const DEFAULT_SETTINGS: StudyAnalyticsSettings = {
@@ -94,6 +105,17 @@ const DEFAULT_SETTINGS: StudyAnalyticsSettings = {
     useCompactDesign: false, // Use a more compact design for the sidebar
     showTagStatsInDaily: false,
     simplifyContinuousUI: false,
+    liveAnalyticsCategories: [],
+    resumePromptOnStartup: true,
+    autoResumeWithoutPrompt: false,
+    autoResumeStartTimer: false,
+    autosaveIntervalSec: 10,
+    jsonPollIntervalSec: 10,
+    liveAnalyticsIncludeTags: true,
+    liveAnalyticsRefreshSec: 1,
+    promptRestoreOnAbruptExit: true,
+    timeZoneMode: 'system',
+    timeZoneOffsetMinutes: 0,
 };
 
 interface DistractionNote {
@@ -123,7 +145,8 @@ interface CompletedTask {
 interface SessionData {
     category: string;
     startTime: Date;
-    duration: number;
+    duration: number; // minutes
+    durationSec?: number; // seconds (added for precision)
     pomodoros: number;
     difficulty: number;
     notes: string;
@@ -146,6 +169,7 @@ interface SessionData {
 interface SessionsData {
     sessions: SessionData[];
     lastUpdated: string;
+    liveSession?: SessionData; // ongoing session snapshot for crash-safe persistence
 }
 
 class StudySession {
@@ -195,6 +219,16 @@ class StudySession {
         this.createdLinks = new Set<string>();
         this.initialLinkCounts = new Map<string, number>();
         this.id = crypto.randomUUID ? crypto.randomUUID() : `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+
+    getDurationSec(): number {
+        const end = this.endTime || new Date();
+        let ms = (Number(end) - Number(this.startTime));
+        if (this.breakStartTime) {
+            ms -= (Number(new Date()) - Number(this.breakStartTime));
+        }
+        ms -= this.totalBreakDuration;
+        return Math.max(0, Math.floor(ms / 1000));
     }
 
     break(): void {
@@ -285,13 +319,8 @@ class StudySession {
     }
 
     getDuration(): number {
-        const end = this.endTime || new Date();
-        let duration = Math.round((Number(end) - Number(this.startTime)) / 60000); // in minutes
-        if (this.breakStartTime) {
-            duration -= Math.round((Number(new Date()) - Number(this.breakStartTime)) / 60000);
-        }
-        duration -= Math.round(this.totalBreakDuration / 60000);
-        return Math.max(0, duration);
+        // Keep legacy minutes value for analytics/summary
+        return Math.floor(this.getDurationSec() / 60);
     }
 
     end(): SessionData {
@@ -300,6 +329,7 @@ class StudySession {
             category: this.category,
             startTime: this.startTime,
             duration: this.getDuration(),
+            durationSec: this.getDurationSec(),
             pomodoros: this.pomodorosCompleted,
             difficulty: this.difficulty,
             notes: this.notes,
@@ -336,6 +366,7 @@ class StudyFlowView extends ItemView {
     interval: number | null;
     timerDisplay: HTMLElement;
     endTimeDisplay: HTMLElement;
+    lastGoalsUpdateTs: number = 0;
     stopwatchToggle: HTMLButtonElement;
     startButton: HTMLButtonElement;
     newSessionButton: HTMLButtonElement;
@@ -351,6 +382,8 @@ class StudyFlowView extends ItemView {
     endTime: number;
     startTime: number;
     goalTimeRemaining: number; // For recurring sessions
+    private isUpdatingDaily: boolean = false;
+    private suppressCategoryChange: boolean = false;
 
     constructor(leaf: WorkspaceLeaf, plugin: StudyAnalyticsPlugin) {
         super(leaf);
@@ -391,6 +424,7 @@ class StudyFlowView extends ItemView {
 
         // Initial update and regular updates
         await this.updateDailyTime();
+        // Keep minute-level background refresh as fallback; real-time sync is driven by throttledGoalUpdate
         this.registerInterval(
             window.setInterval(async () => await this.updateDailyTime(), 60000)
         );
@@ -497,7 +531,8 @@ class StudyFlowView extends ItemView {
         categoryDiv.createEl('label', { text: 'Category: ' });
         this.categorySelect = categoryDiv.createEl('select');
         this.categorySelect.onchange = () => {
-            // When selection changes, start a new session with the selected category
+            if (this.suppressCategoryChange) return;
+            // Only change category through session service when explicitly requested
             this.changeCategory(this.categorySelect.value);
         };
         this.updateCategorySelect();
@@ -524,6 +559,13 @@ class StudyFlowView extends ItemView {
             cls: 'notes-area',
             attr: { rows: '4', placeholder: 'Enter session notes here...' }
         });
+        // Autosave notes changes to persistent snapshot (debounced)
+        this.notesArea.addEventListener('input', () => {
+            if (this.plugin.currentSession) {
+                this.plugin.currentSession.notes = this.notesArea.value || '';
+                this.plugin.scheduleAutosaveLiveSnapshot();
+            }
+        });
 
         // Add Reflection Note Button
         const reflectionDiv = container.createEl('div', { cls: 'reflection-section' });
@@ -532,6 +574,7 @@ class StudyFlowView extends ItemView {
             cls: 'reflection-button'
         });
         reflectionButton.onclick = () => this.addReflection();
+        reflectionDiv.addEventListener('change', () => this.plugin.scheduleAutosaveLiveSnapshot());
 
         // Distraction Reporter
         const distractionDiv = container.createEl('div', { cls: 'distraction-section' });
@@ -553,6 +596,7 @@ class StudyFlowView extends ItemView {
                 this.reportDistraction();
             }
         });
+        this.distractionInput.addEventListener('change', () => this.plugin.scheduleAutosaveLiveSnapshot());
 
         // Simplify UI in continuous mode if enabled
         if (this.plugin.settings.trackWithoutSession && this.plugin.settings.simplifyContinuousUI) {
@@ -565,7 +609,9 @@ class StudyFlowView extends ItemView {
     }
 
     async updateDailyTime(): Promise<void> {
-        const today = new Date().toISOString().split('T')[0];
+        if (this.isUpdatingDaily) return;
+        this.isUpdatingDaily = true;
+        const today = this.plugin.getDateString(new Date());
         let totalMinutes = 0;
 
         try {
@@ -580,18 +626,23 @@ class StudyFlowView extends ItemView {
             // Füge die Zeit der aktuellen Sitzung hinzu, wenn es keine Break ist
             if (this.plugin.currentSession && !this.plugin.currentSession.isBreak) {
                 totalMinutes += this.plugin.currentSession.getDuration();
+            } else if (this.plugin.sessionsData.liveSession && !this.plugin.sessionsData.liveSession.isBreak && this.plugin.sessionsData.liveSession.date === today) {
+                const ls: any = this.plugin.sessionsData.liveSession;
+                const sec = typeof ls.durationSec === 'number' ? ls.durationSec : (ls.duration || 0) * 60;
+                totalMinutes += Math.floor(sec / 60);
             }
 
             const hours = Math.floor(totalMinutes / 60);
             const minutes = totalMinutes % 60;
             
             // Only empty and recreate elements if they don't exist yet
-            if (!this.dailyTimeDisplay.querySelector('.daily-time-total')) {
+            if (!this.dailyTimeDisplay.querySelector('.daily-time-total-btn')) {
                 this.dailyTimeDisplay.empty();
-                this.dailyTimeDisplay.createEl('div', {
+                const btn = this.dailyTimeDisplay.createEl('button', {
                     text: `Today’s study time: ${hours}h ${minutes}m`,
-                    cls: 'daily-time-total'
+                    cls: 'daily-time-total-btn'
                 });
+                btn.onclick = () => { const modal = new LiveAnalyticsModal(this.app, this.plugin); modal.open(); };
                 
                 // Only create the goals container if recurring sessions are enabled
                 if (this.plugin.settings.enableRecurringSessions) {
@@ -607,9 +658,9 @@ class StudyFlowView extends ItemView {
                 }
             } else {
                 // Just update the text content of existing elements
-                const totalTimeEl = this.dailyTimeDisplay.querySelector('.daily-time-total');
+                const totalTimeEl = this.dailyTimeDisplay.querySelector('.daily-time-total-btn');
                 if (totalTimeEl) {
-                    totalTimeEl.textContent = `Today’s study time: ${hours}h ${minutes}m`;
+                    (totalTimeEl as HTMLButtonElement).textContent = `Today’s study time: ${hours}h ${minutes}m`;
                 }
             }
             
@@ -635,80 +686,49 @@ class StudyFlowView extends ItemView {
                     goalsContainer.appendChild(heading);
                 }
                 
-                // Loop through all categories with goals
-                Object.entries(this.plugin.settings.recurringSessionGoals).forEach(([category, goal]) => {
-                    if (!goal.timeGoal) return; // Skip if no goal set
-                    
-                    const timeSpent = categoryTimes[category] || 0;
-                    
-                    // For daily goals, show time spent of daily goal
+                // Loop through all categories with goals (live remaining seconds)
+                const entries = Object.entries(this.plugin.settings.recurringSessionGoals);
+                for (const [category, goal] of entries) {
+                    if (!goal.timeGoal) continue; // Skip if no goal set
+
+                    const remainingSec = await this.computeRemainingGoalSeconds(category);
+                    const remainingHours = Math.floor(remainingSec / 3600);
+                    const remainingMinutes = Math.floor((remainingSec % 3600) / 60);
+
+                    const row = goalsContainer.createEl('div', { cls: 'goal-row' });
+                    row.createEl('span', { text: category, cls: 'goal-category' });
+
                     if (goal.period === 'daily') {
-                        const timeRemaining = Math.max(0, goal.timeGoal - timeSpent);
-                        const remainingHours = Math.floor(timeRemaining);
-                        const remainingMinutes = Math.round((timeRemaining - remainingHours) * 60);
-                        
-                        // Add category row
-                        const row = goalsContainer.createEl('div', {
-                            cls: 'goal-row'
-                        });
-                        
-                        // Category name
-                        row.createEl('span', {
-                            text: category,
-                            cls: 'goal-category'
-                        });
-                        
-                        // Remaining time
                         row.createEl('span', {
                             text: `${remainingHours}h ${remainingMinutes}m left (daily)`,
-                            cls: timeRemaining <= 0 ? 'goal-complete' : 'goal-remaining'
+                            cls: remainingSec <= 0 ? 'goal-complete' : 'goal-remaining'
                         });
-                    }
-                    // For weekly goals, show prorated or total remaining
-                    else if (goal.period === 'weekly') {
-                        // Get goal and time spent
-                        const timeSpentThisWeek = goal.timeSpent || 0;
-                        const remainingTotal = Math.max(0, goal.timeGoal - timeSpentThisWeek);
-                        
-                        // Create row
-                        const row = goalsContainer.createEl('div', {
-                            cls: 'goal-row'
-                        });
-                        
-                        // Category name
-                        row.createEl('span', {
-                            text: category,
-                            cls: 'goal-category'
-                        });
-                        
-                        // If prorating is enabled, show daily target
+                        if (remainingSec <= 0) row.createEl('span', { text: '✓ Goal reached', cls: 'goal-complete-badge' });
+                    } else if (goal.period === 'weekly') {
                         if (this.plugin.settings.prorateWeeklyGoals && daysRemaining > 0) {
-                            const dailyTarget = remainingTotal / daysRemaining;
-                            const dailyHours = Math.floor(dailyTarget);
-                            const dailyMinutes = Math.round((dailyTarget - dailyHours) * 60);
-                            
-                            // Remaining time (daily prorated)
+                            const dailyTargetSec = Math.floor(remainingSec / daysRemaining);
+                            const dHours = Math.floor(dailyTargetSec / 3600);
+                            const dMinutes = Math.floor((dailyTargetSec % 3600) / 60);
                             row.createEl('span', {
-                                text: `${dailyHours}h ${dailyMinutes}m/day (weekly)`,
-                                cls: remainingTotal <= 0 ? 'goal-complete' : 'goal-remaining'
+                                text: `${dHours}h ${dMinutes}m/day (weekly)`,
+                                cls: remainingSec <= 0 ? 'goal-complete' : 'goal-remaining'
                             });
                         } else {
-                            // Just show total remaining for the week
-                            const remainingHours = Math.floor(remainingTotal);
-                            const remainingMinutes = Math.round((remainingTotal - remainingHours) * 60);
-                            
-                            // Remaining time (weekly total)
                             row.createEl('span', {
                                 text: `${remainingHours}h ${remainingMinutes}m left (weekly)`,
-                                cls: remainingTotal <= 0 ? 'goal-complete' : 'goal-remaining'
+                                cls: remainingSec <= 0 ? 'goal-complete' : 'goal-remaining'
                             });
                         }
+                        if (remainingSec <= 0) row.createEl('span', { text: '✓ Goal reached', cls: 'goal-complete-badge' });
                     }
-                });
+                }
             }
         } catch (error) {
             console.error('Error calculating total study time:', error);
             this.dailyTimeDisplay.setText('Today’s study time: Error');
+        }
+        finally {
+            this.isUpdatingDaily = false;
         }
     }
     
@@ -726,21 +746,24 @@ class StudyFlowView extends ItemView {
                         categoryTimes[session.category] = 0;
                     }
                     
-                    // Füge die Dauer hinzu (Umrechnung von Minuten in Stunden)
-                    categoryTimes[session.category] += session.duration / 60;
+                    // Füge die Dauer hinzu (Sekundenpräzision → Stunden)
+                    const sec = typeof (session as any).durationSec === 'number' ? (session as any).durationSec : (session.duration || 0) * 60;
+                    categoryTimes[session.category] += sec / 3600;
                 }
             });
             
-            // Füge die Zeit der aktuellen Sitzung hinzu, wenn es keine Break ist
+            // Füge die Zeit der aktuellen Sitzung hinzu, wenn es keine Break ist (Sekundengenau)
             if (this.plugin.currentSession && !this.plugin.currentSession.isBreak) {
                 const category = this.plugin.currentSession.category;
-                const duration = this.plugin.currentSession.getDuration() / 60; // Umrechnung von Minuten in Stunden
-                
-                if (!categoryTimes[category]) {
-                    categoryTimes[category] = 0;
-                }
-                
-                categoryTimes[category] += duration;
+                const sec = this.plugin.currentSession.getDurationSec();
+                if (!categoryTimes[category]) categoryTimes[category] = 0;
+                categoryTimes[category] += sec / 3600;
+            } else if (this.plugin.sessionsData.liveSession && !this.plugin.sessionsData.liveSession.isBreak && this.plugin.sessionsData.liveSession.date === date) {
+                const s: any = this.plugin.sessionsData.liveSession;
+                const category = s.category;
+                const sec = typeof s.durationSec === 'number' ? s.durationSec : (s.duration || 0) * 60;
+                if (!categoryTimes[category]) categoryTimes[category] = 0;
+                categoryTimes[category] += sec / 3600;
             }
             
             // Für Kategorien mit wiederkehrenden Zielen den timeSpent-Wert hinzufügen
@@ -763,18 +786,25 @@ class StudyFlowView extends ItemView {
 
 
     updateCategorySelect(): void {
+        const prev = this.categorySelect?.value;
+        this.suppressCategoryChange = true;
         this.categorySelect.empty();
         this.plugin.settings.categories.forEach(cat => {
             if (!this.isBreak || cat === '~Break~') {
-                const option = this.categorySelect.createEl('option', {
-                    text: cat,
-                    value: cat
-                });
-                if (cat === '~Break~') {
-                    option.disabled = !this.isBreak;
-                }
+                const option = this.categorySelect.createEl('option', { text: cat, value: cat });
+                if (cat === '~Break~') option.disabled = !this.isBreak;
             }
         });
+        if (prev && this.categorySelect.querySelector(`option[value="${prev}"]`)) {
+            this.categorySelect.value = prev;
+        } else if (this.categorySelect.options.length>0) {
+            // Keep current session category if exists
+            const cur = this.plugin.currentSession?.category;
+            if (cur && this.categorySelect.querySelector(`option[value="${cur}"]`)) {
+                this.categorySelect.value = cur;
+            }
+        }
+        this.suppressCategoryChange = false;
     }
 
     toggleStopwatchMode(): void {
@@ -815,7 +845,9 @@ class StudyFlowView extends ItemView {
                 
                 // Füge Endzeit hinzu, wenn der Timer läuft
                 if (this.isRunning) {
-                    const endTime = new Date(Date.now() + (totalSeconds * 1000));
+                    // Stable end time: round up to the next minute to avoid flicker
+                    const minutesUp = Math.ceil(totalSeconds / 60);
+                    const endTime = new Date(Date.now() + minutesUp * 60000);
                     const endTimeStr = endTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                     endDisplay += ` - Ends at ${endTimeStr}`;
                 }
@@ -835,7 +867,9 @@ class StudyFlowView extends ItemView {
             this.timerDisplay.textContent = display;
 
             if (this.isRunning) {
-                const endTime = new Date(Date.now() + (this.timeLeft * 1000));
+                // Stable end time: round up to next minute from remaining seconds
+                const minutesUp = Math.ceil(remaining / 60);
+                const endTime = new Date(Date.now() + minutesUp * 60000);
                 const endTimeStr = endTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                 this.endTimeDisplay.textContent = `Ends at ${endTimeStr}`;
             } else {
@@ -846,18 +880,96 @@ class StudyFlowView extends ItemView {
         if (this.plugin) {
             this.plugin.updateStatusBar(this.timerDisplay.textContent);
         }
+        // Keep category goals panel in near real-time sync
+        this.throttledGoalUpdate();
+    }
+
+    throttledGoalUpdate(): void {
+        const now = Date.now();
+        if (now - this.lastGoalsUpdateTs >= 1000) {
+            this.lastGoalsUpdateTs = now;
+            // Fire and forget; updateDailyTime is async
+            this.updateDailyTime();
+        }
+    }
+
+    // Compute remaining goal seconds for a category (daily/weekly) considering past sessions and the current one
+    async computeRemainingGoalSeconds(category: string): Promise<number> {
+        const goal = this.plugin.settings.recurringSessionGoals[category];
+        if (!goal || !goal.timeGoal) return 0;
+
+        const goalSeconds = Math.floor(goal.timeGoal * 3600);
+        let spentSeconds = 0;
+
+        if (goal.period === 'daily') {
+            const today = this.plugin.getDateString(new Date());
+            this.plugin.sessionsData.sessions.forEach(s => {
+                if (!s.isBreak && s.date === today && s.category === category) {
+                    const sec = typeof (s as any).durationSec === 'number' ? (s as any).durationSec : (s.duration || 0) * 60;
+                    spentSeconds += sec;
+                }
+            });
+            if (this.plugin.currentSession && !this.plugin.currentSession.isBreak && this.plugin.currentSession.category === category) {
+                spentSeconds += this.plugin.currentSession.getDurationSec();
+            } else if (this.plugin.sessionsData.liveSession && !this.plugin.sessionsData.liveSession.isBreak && this.plugin.sessionsData.liveSession.category === category && this.plugin.sessionsData.liveSession.date === today) {
+                const ls: any = this.plugin.sessionsData.liveSession;
+                const sec = typeof ls.durationSec === 'number' ? ls.durationSec : (ls.duration || 0) * 60;
+                spentSeconds += sec;
+            }
+        } else if (goal.period === 'weekly') {
+            // Compute spent time for the current week based on configured weekly start day
+            const weekDates = this.plugin.getWeekDates(new Date());
+            const inWeek = (ds: string) => weekDates.includes(ds);
+            this.plugin.sessionsData.sessions.forEach(s => {
+                if (!s.isBreak && s.category === category && inWeek(s.date)) {
+                    const sec = typeof (s as any).durationSec === 'number' ? (s as any).durationSec : (s.duration || 0) * 60;
+                    spentSeconds += sec;
+                }
+            });
+            // Add live/current if they fall in this week
+            if (this.plugin.currentSession && !this.plugin.currentSession.isBreak && this.plugin.currentSession.category === category) {
+                const curDate = this.plugin.getDateString(this.plugin.currentSession.startTime);
+                if (inWeek(curDate)) spentSeconds += this.plugin.currentSession.getDurationSec();
+            } else if (this.plugin.sessionsData.liveSession && !this.plugin.sessionsData.liveSession.isBreak && this.plugin.sessionsData.liveSession.category === category) {
+                const ls: any = this.plugin.sessionsData.liveSession;
+                if (inWeek(ls.date)) {
+                    const sec = typeof ls.durationSec === 'number' ? ls.durationSec : (ls.duration || 0) * 60;
+                    spentSeconds += sec;
+                }
+            }
+        }
+
+        return Math.max(0, goalSeconds - spentSeconds);
+    }
+
+    // Recompute and sync recurring goal countdown for current category
+    async refreshRecurringGoalCountdown(): Promise<void> {
+        if (!this.isRecurringSession) return;
+        const category = this.categorySelect?.value;
+        if (!category) return;
+        const remaining = await this.computeRemainingGoalSeconds(category);
+        this.goalTimeRemaining = remaining;
+        const svc = this.plugin.timerService;
+        if (svc) {
+            svc.setMode('recurring');
+            svc.setRecurringGoalSeconds(remaining);
+        }
+        this.updateTimerDisplay();
     }
 
     resetSession(): void {
         if (this.isStopwatch) {
             this.stopwatchElapsed = 0;
         } else if (this.isRecurringSession) {
-            // Für Recurring Sessions, setze die goalTimeRemaining auf das volle Ziel (ohne bisherige Zeit)
             const category = this.categorySelect?.value;
             if (category && this.plugin.settings.recurringSessionGoals[category]) {
-                const goal = this.plugin.settings.recurringSessionGoals[category];
-                // Setze auf die volle Zielzeit in Sekunden (goal.timeGoal ist in Stunden)
-                this.goalTimeRemaining = Math.floor(goal.timeGoal * 3600);
+                // Compute remaining time dynamically
+                this.computeRemainingGoalSeconds(category).then(sec => {
+                    this.goalTimeRemaining = sec;
+                    const svc = this.plugin.timerService;
+                    if (svc) { svc.setMode('recurring'); svc.setRecurringGoalSeconds(sec); }
+                    this.updateTimerDisplay();
+                });
             } else {
                 this.goalTimeRemaining = 0;
             }
@@ -935,6 +1047,8 @@ class StudyFlowView extends ItemView {
             if (mode === 'pomodoro') {
                 svc.setPomodoroSeconds(this.timeLeft);
             } else if (mode === 'recurring') {
+                // ensure countdown starts from actual remaining time
+                // compute synchronously if already computed, else set what we have
                 svc.setRecurringGoalSeconds(this.goalTimeRemaining);
             }
             svc.start();
@@ -943,103 +1057,7 @@ class StudyFlowView extends ItemView {
         this.isRunning = true;
         this.startButton.textContent = 'Pause';
 
-        if (this.isStopwatch) {
-            if (!this.stopwatchStartTime) {
-                this.stopwatchStartTime = Date.now() - this.stopwatchElapsed;
-            }
-            this.interval = window.setInterval(() => {
-                this.stopwatchElapsed = Date.now() - this.stopwatchStartTime;
-                this.updateTimerDisplay();
-                this.updateDailyTime();
-            }, 100);
-        } else if (this.isRecurringSession) {
-            // Start the recurring session countdown timer
-            if (!this.interval) {
-                // Prüfe, ob wir die goalTimeRemaining neu berechnen müssen
-                const category = this.categorySelect.value;
-                if (category && this.plugin.settings.recurringSessionGoals[category]) {
-                    // Wenn wir eine Session neu starten, müssen wir mit der vollen Zielzeit beginnen
-                    if (this.timerStartTime === null) {
-                        // Setze auf die volle Zielzeit
-                        const goal = this.plugin.settings.recurringSessionGoals[category];
-                        this.goalTimeRemaining = Math.floor(goal.timeGoal * 3600);
-                    }
-                }
-                
-                // Set up end time for the current goal
-                this.startTime = Date.now();
-                this.endTime = this.startTime + (this.goalTimeRemaining * 1000);
-                this.lastUpdate = this.startTime;
-                
-                this.interval = window.setInterval(() => {
-                    const now = Date.now();
-                    const elapsed = now - this.lastUpdate;
-                    
-                    // Similar approach to pomodoro timer for smoother countdown
-                    if (elapsed > 2000) { // If more than 2 seconds have passed (e.g., after sleep)
-                        this.goalTimeRemaining = Math.max(0, Math.floor((this.endTime - now) / 1000));
-                    } else {
-                        const remaining = Math.max(0, Math.floor((this.endTime - now) / 1000));
-                        if (remaining !== this.goalTimeRemaining) {
-                            this.goalTimeRemaining = remaining;
-                        }
-                    }
-                    
-                    this.lastUpdate = now;
-                    this.updateTimerDisplay();
-                    
-                    // Only update daily time and goal progress every 60 seconds to avoid excessive calculations
-                    if (Math.floor(this.goalTimeRemaining) % 60 === 0 || this.goalTimeRemaining <= 0) {
-                        this.updateDailyTime();
-                        
-                        // Wir aktualisieren hier NICHT goal.timeSpent, da wir dies später beim Beenden der
-                        // Session tun. Das hilft, inkorrektes Addieren der Zeit zu vermeiden.
-                    }
-                    
-                    // Check if timer has reached zero
-                    if (this.goalTimeRemaining <= 0) {
-                        this.breakTimer();
-                        const category = this.categorySelect.value;
-                        // Only show completion message if the goal was actually achieved during this session
-                        // and wasn't already displayed
-                        const goal = this.plugin.settings.recurringSessionGoals[category];
-                        if (goal && !goal.achieved) {
-                            new Notice(`Goal for ${category} reached!`);
-                            goal.achieved = true;
-                            this.plugin.saveSettings();
-                        }
-                    }
-                }, 100); // Update more frequently for smoother countdown
-            }
-        } else {
-            if (!this.interval) {
-                this.startTime = Date.now();
-                this.endTime = this.startTime + (this.timeLeft * 1000);
-                this.lastUpdate = this.startTime;
-
-                this.interval = window.setInterval(() => {
-                    const now = Date.now();
-                    const elapsed = now - this.lastUpdate;
-
-                    if (elapsed > 2000) {
-                        this.timeLeft = Math.max(0, Math.ceil((this.endTime - now) / 1000));
-                    } else {
-                        const remaining = Math.max(0, Math.ceil((this.endTime - now) / 1000));
-                        if (remaining !== this.timeLeft) {
-                            this.timeLeft = remaining;
-                        }
-                    }
-
-                    this.lastUpdate = now;
-                    this.updateTimerDisplay();
-                    this.updateDailyTime();
-
-                    if (this.timeLeft <= 0) {
-                        this.completeTimer();
-                    }
-                }, 100);
-            }
-        }
+        // No local intervals: TimerService drives timing; UI updates via callbacks and the existing minute update.
     }
 
     breakTimer(): void {
@@ -1265,10 +1283,15 @@ class StudyFlowView extends ItemView {
                 this.isRecurringSession = true;
             this.stopwatchToggle.textContent = 'Switch to pomodoro';
                 
-                // Beim Wechsel in den Recurring-Sessions-Modus, setze die volle Zielzeit für die aktuelle Kategorie
+                // Beim Wechsel in den Recurring-Sessions-Modus: verbleibende Zielzeit ermitteln
                 if (this.plugin.settings.recurringSessionGoals[currentCategory]) {
-                    const goal = this.plugin.settings.recurringSessionGoals[currentCategory];
-                    this.goalTimeRemaining = Math.floor(goal.timeGoal * 3600);
+                    this.computeRemainingGoalSeconds(currentCategory).then(sec => {
+                        this.goalTimeRemaining = sec;
+                        const svc = this.plugin.timerService;
+                        if (svc) { svc.setMode('recurring'); svc.setRecurringGoalSeconds(sec); }
+                        this.updateTimerDisplay();
+                        this.updateDailyTime();
+                    });
                 }
             } else {
                 // If recurring sessions disabled, go directly to Pomodoro
@@ -1301,9 +1324,8 @@ class StudyFlowView extends ItemView {
         if (this.categorySelect.querySelector(`option[value="${currentCategory}"]`)) {
             this.categorySelect.value = currentCategory;
             if (this.isRecurringSession) {
-                // If in recurring sessions mode, update goal display
-                this.updateDailyTime();
-                this.updateTimerDisplay(); // Aktualisiere auch die Timer-Anzeige
+                // If in recurring sessions mode, update goal display and sync timer
+                this.refreshRecurringGoalCountdown();
             }
         }
     }
@@ -1363,6 +1385,31 @@ class StudyFlowSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
+        // Time Zone
+        new Setting(containerEl).setName('Time Zone').setHeading();
+        new Setting(containerEl)
+          .setName('Mode')
+          .setDesc('Use system, UTC, or a fixed UTC offset for date calculations')
+          .addDropdown(d => d
+            .addOption('system', 'System default')
+            .addOption('utc', 'UTC')
+            .addOption('fixed', 'Fixed offset')
+            .setValue(this.plugin.settings.timeZoneMode || 'system')
+            .onChange(async (v) => { this.plugin.settings.timeZoneMode = v as any; await this.plugin.saveSettings(); }));
+        new Setting(containerEl)
+          .setName('Fixed offset (e.g., +02:00 or -0530)')
+          .setDesc('Only applies when mode is Fixed offset')
+          .addText(t => t
+            .setPlaceholder('+02:00')
+            .setValue(this.formatOffset(this.plugin.settings.timeZoneOffsetMinutes || 0))
+            .onChange(async (value) => {
+              const mins = this.parseOffsetToMinutes(value);
+              if (mins !== null) {
+                this.plugin.settings.timeZoneOffsetMinutes = mins;
+                await this.plugin.saveSettings();
+              }
+            }));
+
         new Setting(containerEl).setName('Tags').setHeading();
 
         const tagInput = new Setting(containerEl)
@@ -1382,8 +1429,60 @@ class StudyFlowSettingTab extends PluginSettingTab {
                         this.plugin.saveSettings();
                         textComponent.setValue('');
                         this.display();
-                    }
+                }
+            }));
+
+        // Live Analytics
+        new Setting(containerEl).setName('Live Analytics').setHeading();
+        new Setting(containerEl)
+            .setName('Chart categories (max 2)')
+            .setDesc('Comma-separated category names to display in the live analytics bar chart')
+            .addText(t => t
+                .setPlaceholder('e.g., Study, Work')
+                .setValue((this.plugin.settings.liveAnalyticsCategories || []).join(', '))
+                .onChange(async (value) => {
+                    const parts = value.split(',').map(s => s.trim()).filter(Boolean);
+                    this.plugin.settings.liveAnalyticsCategories = parts.slice(0, 2);
+                    await this.plugin.saveSettings();
                 }));
+        new Setting(containerEl)
+            .setName('Include tags in live analytics')
+            .setDesc('Show tracked tag breakdown when enabled and tags are configured')
+            .addToggle(t => t
+                .setValue(this.plugin.settings.liveAnalyticsIncludeTags || false)
+                .onChange(async (v) => { this.plugin.settings.liveAnalyticsIncludeTags = v; await this.plugin.saveSettings(); }));
+
+        // Restore on startup (prompt)
+        new Setting(containerEl)
+            .setName('Offer restore on startup')
+            .setDesc('If a previous session was not ended, offer to restore it on startup')
+            .addToggle(t => t
+                .setValue(this.plugin.settings.promptRestoreOnAbruptExit || false)
+                .onChange(async (v) => {
+                    this.plugin.settings.promptRestoreOnAbruptExit = v;
+                    await this.plugin.saveSettings();
+                }));
+
+        // Intervals
+        new Setting(containerEl).setName('Intervals').setHeading();
+        new Setting(containerEl)
+            .setName('Autosave interval (sec)')
+            .setDesc('How often to persist a live snapshot of the running session')
+            .addText(t => t
+                .setValue(String(this.plugin.settings.autosaveIntervalSec || 10))
+                .onChange(async (v) => { const n = parseInt(v)||10; this.plugin.settings.autosaveIntervalSec = n; await this.plugin.saveSettings(); }));
+        new Setting(containerEl)
+            .setName('JSON poll interval (sec)')
+            .setDesc('How often to check the sessions JSON file for changes')
+            .addText(t => t
+                .setValue(String(this.plugin.settings.jsonPollIntervalSec || 10))
+                .onChange(async (v) => { const n = parseInt(v)||10; this.plugin.settings.jsonPollIntervalSec = n; await this.plugin.saveSettings(); }));
+        new Setting(containerEl)
+            .setName('Live analytics refresh (sec)')
+            .setDesc('How often the live analytics modal refreshes')
+            .addText(t => t
+                .setValue(String(this.plugin.settings.liveAnalyticsRefreshSec || 1))
+                .onChange(async (v) => { const n = Math.max(1, parseInt(v)||1); this.plugin.settings.liveAnalyticsRefreshSec = n; await this.plugin.saveSettings(); }));
 
         this.plugin.settings.tags.forEach((tag, index) => {
             new Setting(containerEl)
@@ -1939,6 +2038,25 @@ class StudyFlowSettingTab extends PluginSettingTab {
             });
         }
     }
+
+    private parseOffsetToMinutes(val: string): number | null {
+        const s = val.trim();
+        if (!s) return 0;
+        const m = s.match(/^([+-]?)(\d{1,2})(?::?(\d{2}))?$/);
+        if (!m) return null;
+        const sign = m[1] === '-' ? -1 : 1;
+        const hh = parseInt(m[2],10);
+        const mm = m[3] ? parseInt(m[3],10) : 0;
+        if (hh>14 || mm>59) return null;
+        return sign * (hh*60 + mm);
+    }
+    private formatOffset(mins: number): string {
+        const sign = mins<0 ? '-' : '+';
+        const m = Math.abs(mins);
+        const hh = Math.floor(m/60).toString().padStart(2,'0');
+        const mm = (m%60).toString().padStart(2,'0');
+        return `${sign}${hh}:${mm}`;
+    }
 }
 
 export default class StudyAnalyticsPlugin extends Plugin {
@@ -1954,6 +2072,10 @@ export default class StudyAnalyticsPlugin extends Plugin {
     summaryService: SummaryService | null = null;
     sessionService: SessionService | null = null;
     tagIndexService: TagIndexService | null = null;
+    private liveAutosaveTimer: number | null = null;
+    private sessionsPollIntervalId: number | null = null;
+    debugEnabled: boolean = false;
+    private lastDebugTick: number = 0;
 
     async onload() {
         // Load settings
@@ -1981,6 +2103,19 @@ export default class StudyAnalyticsPlugin extends Plugin {
             onTick: () => {
                 const view = this.getStudyFlowView();
                 view?.updateTimerDisplay();
+                // Also keep the goals panel in sync while ticking
+                view?.throttledGoalUpdate();
+                // Optional debug tick (throttled)
+                if (this.debugEnabled) {
+                    const now = Date.now();
+                    if (now - this.lastDebugTick > 1000) {
+                        this.lastDebugTick = now;
+                        try {
+                            const st = this.timerService!.getState();
+                            console.debug('[SA] tick', { mode: st.mode, remainingSec: st.remainingSec, goalRemainingSec: st.goalRemainingSec, elapsedMs: st.elapsedMs, isRunning: st.isRunning });
+                        } catch {}
+                    }
+                }
             },
             onComplete: () => {
                 const view = this.getStudyFlowView();
@@ -2002,10 +2137,24 @@ export default class StudyAnalyticsPlugin extends Plugin {
         );
         
         // Automatically open the sidebar on startup
-        this.app.workspace.onLayoutReady(() => {
+        this.app.workspace.onLayoutReady(async () => {
             this.activateView();
             this.checkWeeklySummary();
-            this.startAutoTracking();
+            // Avoid auto-tracking session if a snapshot exists; let resume handle it
+            if (!this.sessionsData.liveSession) {
+                this.startAutoTracking();
+            }
+            // Optional: offer restore if an unfinished snapshot exists
+            if (this.settings.promptRestoreOnAbruptExit && this.sessionsData.liveSession && !this.currentSession) {
+                const modal = new LiveSessionResumeModal(this.app, this);
+                modal.open();
+            }
+            // Ensure daily time and goals reflect loaded sessions immediately
+            const view = this.getStudyFlowView();
+            if (view) {
+                view.updateDailyTime();
+                view.refreshRecurringGoalCountdown().catch(()=>{});
+            }
         });
 
         // Add ribbon icon
@@ -2024,6 +2173,19 @@ export default class StudyAnalyticsPlugin extends Plugin {
         this.trackingService.register();
         // Register tag index caching
         await this.tagIndexService.register();
+
+        // Kick off frequent live autosave to persist running session state
+        this.registerInterval(
+            window.setInterval(() => this.autosaveLiveSessionSnapshot().catch(() => {}), (this.settings.autosaveIntervalSec||10)*1000)
+        );
+
+        // Periodically poll sessions data file for external updates
+        this.registerInterval(
+            window.setInterval(() => this.pollSessionsDataFromDisk().catch(() => {}), (this.settings.jsonPollIntervalSec||10)*1000)
+        );
+
+        // Initialize debug flag (env or file)
+        await this.updateDebugEnabled();
 
         // Add settings tab
         this.addSettingTab(new StudyFlowSettingTab(this.app, this));
@@ -2090,6 +2252,14 @@ export default class StudyAnalyticsPlugin extends Plugin {
 
     async saveSettings() {
         await this.saveData(this.settings);
+        const view = this.getStudyFlowView();
+        if (view) {
+            // Keep UI and timers in sync with changed settings
+            view.updateCategorySelect();
+            view.updateTimerDisplay();
+            view.updateDailyTime();
+            await view.refreshRecurringGoalCountdown();
+        }
     }
 
     async activateView() {
@@ -2154,6 +2324,12 @@ export default class StudyAnalyticsPlugin extends Plugin {
             await this.saveSessionToFile(sessionData);
             this.currentSession = null;
 
+            // Clear any live snapshot now that the session is finalized
+            if (this.sessionsData.liveSession) {
+                delete this.sessionsData.liveSession;
+                await this.saveSessionsData();
+            }
+
             if (view) {
                 view.resetSession();
                 // Aktualisiere die Zielanzeige, nachdem die Session beendet wurde
@@ -2171,6 +2347,9 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 await this.app.vault.createFolder(this.settings.notesFolder);
             }
             
+            // Normalize date using plugin time-zone settings
+            try { sessionData.date = this.getDateString(new Date(sessionData.startTime)); } catch {}
+
             // Add the session to our sessions data array
             this.sessionsData.sessions.push(sessionData);
             this.sessionsData.lastUpdated = new Date().toISOString();
@@ -2183,12 +2362,76 @@ export default class StudyAnalyticsPlugin extends Plugin {
         }
     }
 
+    // Periodically persist the current session state (notes, duration, etc.) to avoid data loss
+    async autosaveLiveSessionSnapshot(): Promise<void> {
+        try {
+            // If no session running, clear existing live snapshot if present
+            if (!this.currentSession) {
+                if (this.sessionsData.liveSession) {
+                    delete this.sessionsData.liveSession;
+                    this.sessionsData.lastUpdated = new Date().toISOString();
+                    await this.saveSessionsData();
+                }
+                return;
+            }
+
+            // Pull the latest notes/difficulty from the view if available
+            const view = this.getStudyFlowView();
+            if (view) {
+                this.currentSession.notes = view.notesArea.value || '';
+                if (this.settings.showDifficulty && view.difficultySlider) {
+                    const val = parseInt(view.difficultySlider.value);
+                    if (!Number.isNaN(val)) this.currentSession.difficulty = val;
+                }
+            }
+
+            // Create a snapshot of the running session without finalizing it
+            const snapshot: SessionData = {
+                category: this.currentSession.category,
+                startTime: this.currentSession.startTime,
+                duration: this.currentSession.getDuration(),
+                durationSec: this.currentSession.getDurationSec(),
+                pomodoros: this.currentSession.pomodorosCompleted,
+                difficulty: this.currentSession.difficulty,
+                notes: this.currentSession.notes,
+                distractions: this.currentSession.distractions,
+                lineNotes: this.currentSession.lineNotes,
+                modifiedFiles: Array.from(this.currentSession.modifiedFiles),
+                openedFiles: Array.from(this.currentSession.openedFiles),
+                createdFiles: Array.from(this.currentSession.createdFiles),
+                completedTasks: this.currentSession.completedTasks,
+                reflections: this.currentSession.reflections,
+                date: this.getDateString(this.currentSession.startTime),
+                completed: false,
+                isBreak: this.currentSession.isBreak,
+                breakDuration: Math.round(this.currentSession.totalBreakDuration / 60000),
+                wordCount: this.currentSession.wordCount,
+                createdLinks: Array.from(this.currentSession.createdLinks),
+                id: this.currentSession.id,
+            };
+
+            this.sessionsData.liveSession = snapshot;
+            this.sessionsData.lastUpdated = new Date().toISOString();
+            await this.saveSessionsData();
+        } catch (e) {
+            console.error('Autosave live session failed', e);
+        }
+    }
+
+    // Debounced autosave trigger (e.g., from notes input)
+    scheduleAutosaveLiveSnapshot(delayMs = 1500) {
+        if (this.liveAutosaveTimer) window.clearTimeout(this.liveAutosaveTimer);
+        this.liveAutosaveTimer = window.setTimeout(() => {
+            this.autosaveLiveSessionSnapshot();
+        }, delayMs);
+    }
+
     async createDailySummary(date?: string) {
         // New service-based implementation
         return await this.createDailySummaryUsingServices(date);
         // Legacy code below is kept for now but never executed
         // It will be removed after full migration is validated
-        const summaryDate = date || new Date().toISOString().split('T')[0];
+        const summaryDate = date || this.getDateString(new Date());
         const summaryFileName = `${summaryDate}_daily_summary.md`;
         const summaryFilePath = `${this.settings.notesFolder}/${summaryFileName}`;
         let studySessions: SessionData[] = [];
@@ -2364,7 +2607,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
                     for (const file of files) {
                         const tfile = this.app.vault.getAbstractFileByPath(file);
                         if (tfile instanceof TFile) {
-                            const cache = this.app.metadataCache.getFileCache(tfile);
+                            const cache = this.app.metadataCache.getFileCache(tfile as TFile);
                             if (cache && cache.tags) {
                                 const fileTags = cache.tags.map(t => t.tag);
                                 for (const tag of this.settings.tagsToTrack) {
@@ -2584,7 +2827,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
             const currentDate = new Date(monday);
             
             while (currentDate <= sunday) {
-                weekDates.push(currentDate.toISOString().split('T')[0]);
+                weekDates.push(this.getDateString(currentDate));
                 currentDate.setDate(currentDate.getDate() + 1);
             }
             
@@ -2695,7 +2938,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
                             for (const file of possibleTaggedFiles) {
                                 const tfile = this.app.vault.getAbstractFileByPath(file);
                                 if (tfile instanceof TFile) {
-                                    const cache = this.app.metadataCache.getFileCache(tfile);
+                                    const cache = this.app.metadataCache.getFileCache(tfile as TFile);
                                     if (cache && cache.tags) {
                                         const fileTags = cache.tags.map(t => t.tag);
                                         
@@ -2750,8 +2993,8 @@ export default class StudyAnalyticsPlugin extends Plugin {
             const totalTimeMinutes = (weeklyStudyTime + weeklyBreakTime) % 60;
             
             // Format the date range for the title
-            const mondayStr = monday.toISOString().split('T')[0];
-            const sundayStr = sunday.toISOString().split('T')[0];
+            const mondayStr = this.getDateString(monday);
+            const sundayStr = this.getDateString(sunday);
             const weekRange = `${mondayStr} to ${sundayStr}`;
             
             let summaryContent = `# Weekly Study Summary - ${weekRange}\n\n`;
@@ -3032,6 +3275,47 @@ export default class StudyAnalyticsPlugin extends Plugin {
         this.statusBarItem.setText(`🍅 ${time}`);
     }
     
+    // Time zone helpers
+    getDateString(d: Date): string {
+        const mode = this.settings.timeZoneMode || 'system';
+        if (mode === 'system') {
+            const y = d.getFullYear();
+            const m = (d.getMonth()+1).toString().padStart(2,'0');
+            const day = d.getDate().toString().padStart(2,'0');
+            return `${y}-${m}-${day}`;
+        } else if (mode === 'utc') {
+            return d.toISOString().slice(0,10);
+        } else {
+            const off = this.settings.timeZoneOffsetMinutes || 0; // minutes from UTC
+            const shifted = new Date(d.getTime() + off*60000);
+            return shifted.toISOString().slice(0,10);
+        }
+    }
+    getDayOfWeek(d: Date): number {
+        const mode = this.settings.timeZoneMode || 'system';
+        if (mode === 'system') return d.getDay();
+        if (mode === 'utc') return d.getUTCDay();
+        const off = this.settings.timeZoneOffsetMinutes || 0;
+        const shifted = new Date(d.getTime() + off*60000);
+        return shifted.getUTCDay();
+    }
+    getWeekDates(baseDate?: Date): string[] {
+        const d = baseDate ? new Date(baseDate) : new Date();
+        const startDow = this.settings.weeklySummaryDay ?? 0;
+        const curDow = this.getDayOfWeek(d);
+        const diff = (curDow - startDow + 7) % 7;
+        const start = new Date(d);
+        start.setDate(d.getDate() - diff);
+        start.setHours(0,0,0,0);
+        const out: string[] = [];
+        for (let i=0;i<7;i++) {
+            const nd = new Date(start);
+            nd.setDate(start.getDate()+i);
+            out.push(this.getDateString(nd));
+        }
+        return out;
+    }
+    
     // Auto-update category based on current folder
     updateCategoryByFolder(filePath: string): void {
         if (!this.currentSession || this.currentSession.isBreak) return;
@@ -3114,7 +3398,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
         if (today === this.settings.weeklySummaryDay) {
             // Check if we already created the weekly summary today
             const lastWeeklySummaryDate = this.settings.lastWeeklySummary || '';
-            const todayStr = now.toISOString().split('T')[0];
+            const todayStr = this.getDateString(now);
             
             if (lastWeeklySummaryDate !== todayStr) {
                 // Create the weekly summary
@@ -3224,6 +3508,12 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 // Convert date strings back to Date objects for startTime
                 sessionsData.sessions.forEach(session => {
                     session.startTime = new Date(session.startTime);
+                    // Normalize date to plugin date string (handles UTC/system/fixed)
+                    try { (session as any).date = this.getDateString(new Date(session.startTime)); } catch {}
+                    // ensure durationSec exists for precision
+                    if (typeof (session as any).durationSec !== 'number') {
+                        (session as any).durationSec = (session.duration || 0) * 60;
+                    }
                     
                     // Convert date strings in distractions
                     if (session.distractions) {
@@ -3255,6 +3545,17 @@ export default class StudyAnalyticsPlugin extends Plugin {
                 });
                 
                 this.sessionsData = sessionsData;
+                // Revive liveSession dates if present
+                if (this.sessionsData.liveSession) {
+                    const s = this.sessionsData.liveSession as any;
+                    s.startTime = new Date(s.startTime);
+                    try { s.date = this.getDateString(new Date(s.startTime)); } catch {}
+                    if (typeof s.durationSec !== 'number') s.durationSec = (s.duration || 0) * 60;
+                    if (Array.isArray(s.distractions)) s.distractions.forEach((d: any) => d.time = new Date(d.time));
+                    if (Array.isArray(s.lineNotes)) s.lineNotes.forEach((n: any) => n.time = new Date(n.time));
+                    if (Array.isArray(s.reflections)) s.reflections.forEach((r: any) => r.time = new Date(r.time));
+                    if (Array.isArray(s.completedTasks)) s.completedTasks.forEach((t: any) => t.time = new Date(t.time));
+                }
             }
         } catch (error) {
             console.error("Error loading sessions data:", error);
@@ -3262,6 +3563,70 @@ export default class StudyAnalyticsPlugin extends Plugin {
             // Initialize with empty data if there was an error
             this.sessionsData = { sessions: [], lastUpdated: new Date().toISOString() };
         }
+    }
+
+    // Poll the sessions JSON on disk and update in-memory + UI if it changed elsewhere
+    private async pollSessionsDataFromDisk(): Promise<void> {
+        try {
+            if (!(await this.app.vault.adapter.exists(this.sessionsFilePath))) return;
+            const raw = await this.app.vault.adapter.read(this.sessionsFilePath);
+            const incoming = JSON.parse(raw) as SessionsData;
+            if (!incoming || !incoming.lastUpdated) return;
+            if (incoming.lastUpdated === this.sessionsData.lastUpdated) return;
+            // Prepare and adopt new data (reuse conversion logic)
+            const prevLive = this.sessionsData.liveSession;
+            this.sessionsData = incoming;
+            // revive types similar to loadSessionsData
+            this.sessionsData.sessions.forEach((s: any) => {
+                s.startTime = new Date(s.startTime);
+                try { s.date = this.getDateString(new Date(s.startTime)); } catch {}
+                if (typeof s.durationSec !== 'number') s.durationSec = (s.duration || 0) * 60;
+                if (Array.isArray(s.distractions)) s.distractions.forEach((d: any) => d.time = new Date(d.time));
+                if (Array.isArray(s.lineNotes)) s.lineNotes.forEach((n: any) => n.time = new Date(n.time));
+                if (Array.isArray(s.reflections)) s.reflections.forEach((r: any) => r.time = new Date(r.time));
+                if (Array.isArray(s.completedTasks)) s.completedTasks.forEach((t: any) => t.time = new Date(t.time));
+            });
+            if (this.sessionsData.liveSession) {
+                const ls: any = this.sessionsData.liveSession;
+                ls.startTime = new Date(ls.startTime);
+                try { ls.date = this.getDateString(new Date(ls.startTime)); } catch {}
+                if (typeof ls.durationSec !== 'number') ls.durationSec = (ls.duration || 0) * 60;
+                if (Array.isArray(ls.distractions)) ls.distractions.forEach((d: any) => d.time = new Date(d.time));
+                if (Array.isArray(ls.lineNotes)) ls.lineNotes.forEach((n: any) => n.time = new Date(n.time));
+                if (Array.isArray(ls.reflections)) ls.reflections.forEach((r: any) => r.time = new Date(r.time));
+                if (Array.isArray(ls.completedTasks)) ls.completedTasks.forEach((t: any) => t.time = new Date(t.time));
+            }
+            if (this.debugEnabled) console.debug('[SA] sessions reloaded from disk', { lastUpdated: this.sessionsData.lastUpdated, count: this.sessionsData.sessions.length });
+            // Update current view (goals/timers) based on fresh data
+            const view = this.getStudyFlowView();
+            if (view) {
+                await view.updateDailyTime();
+                await view.refreshRecurringGoalCountdown();
+                view.updateTimerDisplay();
+            }
+            // Also update debug flag from file (allows CLI toggle by touching a file)
+            await this.updateDebugEnabled();
+        } catch (e) {
+            console.warn('pollSessionsDataFromDisk failed', e);
+        }
+    }
+
+    // Update debugEnabled from environment or a special file in notesFolder
+    private async updateDebugEnabled() {
+        try {
+            // Env variable preferred
+            const envFlag = (typeof process !== 'undefined' && (process as any)?.env) ? (((process as any).env.STUDY_ANALYTICS_DEBUG === '1') || ((process as any).env.OBSIDIAN_STUDY_ANALYTICS_DEBUG === '1')) : false;
+            let fileFlag = false;
+            try {
+                const flagPath = `${this.settings.notesFolder}/.study-analytics-debug`;
+                fileFlag = await this.app.vault.adapter.exists(flagPath);
+            } catch {}
+            const newVal = !!(envFlag || fileFlag);
+            if (newVal !== this.debugEnabled) {
+                this.debugEnabled = newVal;
+                console.info('[SA] Debug mode', newVal ? 'ENABLED' : 'DISABLED');
+            }
+        } catch {}
     }
 
     async saveSessionsData() {
@@ -3376,7 +3741,7 @@ export default class StudyAnalyticsPlugin extends Plugin {
 
     // New service-based daily summary
     async createDailySummaryUsingServices(date?: string) {
-        const summaryDate = date || new Date().toISOString().split('T')[0];
+        const summaryDate = date || this.getDateString(new Date());
         const summaryFileName = `${summaryDate}_daily_summary.md`;
         const summaryFilePath = `${this.settings.notesFolder}/${summaryFileName}`;
         try {
@@ -3419,10 +3784,10 @@ export default class StudyAnalyticsPlugin extends Plugin {
     async createWeeklySummaryUsingServices() {
         try {
             const now = new Date();
-            const currentDay = now.getDay();
-            const diff = now.getDate() - currentDay + (currentDay === 0 ? -6 : 1);
-            const monday = new Date(now.setDate(diff));
-            monday.setHours(0,0,0,0);
+            // derive week start using settings
+            const weekDates = this.getWeekDates(now);
+            const startStr = weekDates[0];
+            const monday = new Date(startStr + 'T00:00:00Z');
             const weekly = this.analyticsService.computeWeekly(monday);
             const content = this.summaryService.renderWeekly(weekly);
             const weeklyFileName = `${weekly.rangeStart}_weekly_summary.md`;
@@ -3436,5 +3801,523 @@ export default class StudyAnalyticsPlugin extends Plugin {
             console.error('Error creating weekly summary:', error);
             new Notice('Error creating weekly summary');
         }
+    }
+}
+
+class LiveAnalyticsModal extends Modal {
+    plugin: StudyAnalyticsPlugin;
+    intervalId: number | null = null;
+    period: 'day' | 'week' | 'month' = 'day';
+    anchorDate: string = '';
+    contentRoot!: HTMLElement;
+    chartRoot!: HTMLElement;
+    statsRoot!: HTMLElement;
+    detailsRoot!: HTMLElement;
+    periodCatRoot!: HTMLElement;
+    selectedDate: string | null = null;
+
+    constructor(app: App, plugin: StudyAnalyticsPlugin) {
+        super(app);
+        this.plugin = plugin;
+        this.anchorDate = this.plugin.getDateString(new Date());
+    }
+
+    onOpen() {
+        this.titleEl.setText('Live Analytics');
+        const { contentEl } = this;
+        contentEl.empty();
+
+        // Controls
+        const controls = contentEl.createEl('div', { cls: 'live-analytics-controls' });
+        const periodSelect = controls.createEl('select');
+        ;(['day','week','month'] as const).forEach(p => {
+            const opt = periodSelect.createEl('option', { text: p.toUpperCase(), value: p });
+            if (p === this.period) opt.selected = true;
+        });
+        periodSelect.onchange = () => {
+            this.period = periodSelect.value as any;
+            this.render();
+        };
+        const dateInput = controls.createEl('input', { type: 'date', value: this.anchorDate });
+        dateInput.onchange = () => { this.anchorDate = dateInput.value || this.anchorDate; this.render(); };
+        const hint = controls.createEl('div', { text: 'Select period and date. Updates in real time.', cls: 'live-analytics-hint' });
+        const exportBtn = controls.createEl('button', { text: 'Export CSV', cls: 'live-export-button' });
+        exportBtn.onclick = () => { this.exportCsv().catch(e=>console.error(e)); };
+
+        this.statsRoot = contentEl.createEl('div', { cls: 'live-analytics-stats' });
+        this.chartRoot = contentEl.createEl('div', { cls: 'live-analytics-chart' });
+        this.periodCatRoot = contentEl.createEl('div', { cls: 'live-analytics-catdist' });
+        this.detailsRoot = contentEl.createEl('div', { cls: 'live-analytics-details' });
+
+        this.render();
+        const hz = Math.max(1, this.plugin.settings.liveAnalyticsRefreshSec || 1);
+        this.intervalId = window.setInterval(() => this.render(), hz * 1000);
+    }
+
+    onClose() {
+        if (this.intervalId) { window.clearInterval(this.intervalId); this.intervalId = null; }
+    }
+
+    private getDatesForPeriod(): string[] {
+        // Build dates using plugin helpers (time-zone aware)
+        if (!this.anchorDate) this.anchorDate = this.plugin.getDateString(new Date());
+        if (this.period === 'day') return [this.anchorDate];
+
+        // Local noon anchor to avoid DST/offset issues
+        const [ay, am, ad] = this.anchorDate.split('-').map(n=>parseInt(n,10));
+        const anchorLocal = new Date(ay, (am||1)-1, ad||1, 12, 0, 0, 0);
+
+        if (this.period === 'week') {
+            return this.plugin.getWeekDates(anchorLocal);
+        }
+        // month (generate dates from first to first of next month)
+        const first = new Date(anchorLocal.getFullYear(), anchorLocal.getMonth(), 1, 12, 0, 0, 0);
+        const nextMonth = new Date(anchorLocal.getFullYear(), anchorLocal.getMonth()+1, 1, 12, 0, 0, 0);
+        const out: string[] = [];
+        for (let cur = new Date(first); cur < nextMonth; cur = new Date(cur.getTime()+86400000)) {
+            out.push(this.plugin.getDateString(cur));
+        }
+        return out;
+    }
+
+    private augmentDaily(d: any, date: string) {
+        // Add live snapshot/current session to daily if applicable
+        const today = this.plugin.getDateString(new Date());
+        const live = this.plugin.sessionsData.liveSession as any;
+        // If the selected day matches live snapshot and there is no current session with same date
+        if (live && live.date === date) {
+            const sec = typeof live.durationSec === 'number' ? live.durationSec : (live.duration || 0) * 60;
+            d.totalStudyTime += Math.floor(sec/60);
+            d.totalWordCount += live.wordCount || 0;
+            d.totalDistractions += (live.distractions?.length || 0);
+            d.totalTasks += (live.completedTasks?.length || 0);
+        }
+        if (this.plugin.currentSession && !this.plugin.currentSession.isBreak && date === today) {
+            d.totalStudyTime += this.plugin.currentSession.getDuration();
+            d.totalWordCount += this.plugin.currentSession.wordCount || 0;
+            d.totalDistractions += this.plugin.currentSession.distractions.length;
+            d.totalTasks += this.plugin.currentSession.completedTasks.length;
+        }
+    }
+
+    private render() {
+        const dates = this.getDatesForPeriod();
+        if (!this.selectedDate || !dates.includes(this.selectedDate)) {
+            this.selectedDate = dates.includes(this.anchorDate) ? this.anchorDate : dates[dates.length-1];
+        }
+        // Aggregate
+        let study=0, brk=0, pom=0, dis=0, tasks=0, words=0, created=0, modified=0;
+        const perDayCategory: Record<string, Record<string, number>> = {}; // date -> cat -> minutes
+        const cats = (this.plugin.settings.liveAnalyticsCategories || []).slice(0,2);
+        dates.forEach(date => {
+            const daily = this.plugin.analyticsService!.computeDaily(date);
+            this.augmentDaily(daily, date);
+            study += daily.totalStudyTime;
+            brk += daily.totalBreakTime;
+            pom += daily.totalPomodoros;
+            dis += daily.totalDistractions;
+            tasks += daily.totalTasks;
+            words += daily.totalWordCount;
+            created += daily.createdNotes.length;
+            modified += daily.modifiedNotes.length;
+            // per category (selected ones)
+            const perCat: Record<string, number> = {};
+            cats.forEach(c => perCat[c] = 0);
+            // from sessions
+            this.plugin.sessionsData.sessions.forEach(s => {
+                if (!s.isBreak && s.date === date && cats.includes(s.category)) {
+                    perCat[s.category] += s.duration;
+                }
+            });
+            // live/current
+            const live = this.plugin.sessionsData.liveSession as any;
+            if (live && live.date === date && cats.includes(live.category) && !this.plugin.currentSession) {
+                perCat[live.category] += Math.floor(((typeof live.durationSec === 'number' ? live.durationSec : (live.duration||0)*60))/60);
+            }
+            if (this.plugin.currentSession && !this.plugin.currentSession.isBreak) {
+                const curDate = this.plugin.getDateString(this.plugin.currentSession.startTime);
+                if (curDate === date && cats.includes(this.plugin.currentSession.category)) {
+                    perCat[this.plugin.currentSession.category] += this.plugin.currentSession.getDuration();
+                }
+            }
+            perDayCategory[date] = perCat;
+        });
+
+        // Render stats
+        const sH = Math.floor(study/60), sM = study%60;
+        const bH = Math.floor(brk/60), bM = brk%60;
+        const tH = Math.floor((study+brk)/60), tM = (study+brk)%60;
+        this.statsRoot.empty();
+        this.statsRoot.createEl('div', { text: `Study: ${sH}h ${sM}m • Break: ${bH}h ${bM}m • Total: ${tH}h ${tM}m` });
+        this.statsRoot.createEl('div', { text: `Pomodoros: ${pom} • Distractions: ${dis} • Tasks: ${tasks} • Words: ${words}` });
+        this.statsRoot.createEl('div', { text: `Created notes: ${created} • Modified notes: ${modified}` });
+
+        // Optional tags breakdown across the selected period
+        if (this.plugin.settings.liveAnalyticsIncludeTags && this.plugin.settings.trackTaggedNotes && (this.plugin.settings.tagsToTrack||[]).length) {
+            const idx = this.plugin.tagIndexService;
+            const tagCounts: Record<string, {created:number, modified:number}> = {};
+            this.plugin.settings.tagsToTrack.forEach(t=> tagCounts[t] = {created:0, modified:0});
+            dates.forEach(date => {
+                const daily = this.plugin.analyticsService!.computeDaily(date);
+                const createdMd = daily.createdNotes;
+                const modifiedMd = daily.modifiedNotes;
+                createdMd.forEach(f => {
+                    for (const tag of this.plugin.settings.tagsToTrack) {
+                        const set = idx?.getFilesForTag(tag);
+                        if (set && set.has(f)) tagCounts[tag].created++;
+                    }
+                });
+                modifiedMd.forEach(f => {
+                    for (const tag of this.plugin.settings.tagsToTrack) {
+                        const set = idx?.getFilesForTag(tag);
+                        if (set && set.has(f)) tagCounts[tag].modified++;
+                    }
+                });
+            });
+            const wrap = this.statsRoot.createEl('div', { cls: 'tag-breakdown' });
+            wrap.createEl('div', { text: 'Tracked tags (period):' });
+            const ul = wrap.createEl('ul');
+            for (const tag of this.plugin.settings.tagsToTrack) {
+                const c = tagCounts[tag] || {created:0, modified:0};
+                ul.createEl('li', { text: `${tag}: Created ${c.created} • Modified ${c.modified}` });
+            }
+        }
+
+        // Render simple bar chart for up to two categories across dates
+        this.chartRoot.empty();
+        if (cats.length === 0) {
+            this.chartRoot.createEl('div', { text: 'Configure up to 2 categories in settings to see the chart.' });
+        } else {
+            const maxVal = Math.max(1, ...dates.map(d=>Math.max(...cats.map(c=> perDayCategory[d][c] || 0))));
+            const chart = this.chartRoot.createEl('div', { cls: 'live-chart-grid' });
+            // Header row
+            const head = chart.createEl('div', { cls: 'live-chart-row live-chart-head' });
+            head.createEl('div', { cls: 'live-chart-cell', text: 'Date' });
+            cats.forEach(c => head.createEl('div', { cls: 'live-chart-cell', text: c }));
+
+            dates.forEach(d => {
+                const row = chart.createEl('div', { cls: 'live-chart-row' });
+                const label = row.createEl('div', { cls: 'live-chart-cell live-chart-label', text: d });
+                if (this.selectedDate === d) label.addClass('is-selected');
+                label.onclick = () => { this.selectedDate = d; this.render(); };
+                cats.forEach((c, idx) => {
+                    const v = perDayCategory[d][c] || 0; // minutes
+                    const barCell = row.createEl('div', { cls: 'live-chart-cell' });
+                    const bar = barCell.createEl('div', { cls: `live-bar cat-${idx}` });
+                    const pct = Math.round((v / maxVal) * 100);
+                    bar.setAttr('style', `width:${pct}%;`);
+                    bar.setText(`${v}m`);
+                });
+            });
+        }
+
+        // Period category distribution (top categories by minutes)
+        this.periodCatRoot.empty();
+        const catTotals: Record<string, number> = {};
+        dates.forEach(date => {
+            this.plugin.sessionsData.sessions.forEach(s => {
+                if (!s.isBreak && s.date === date) {
+                    catTotals[s.category] = (catTotals[s.category] || 0) + s.duration;
+                }
+            });
+            const live = this.plugin.sessionsData.liveSession as any;
+            if (live && live.date === date && !this.plugin.currentSession) {
+                catTotals[live.category] = (catTotals[live.category] || 0) + Math.floor(((typeof live.durationSec==='number'? live.durationSec : (live.duration||0)*60))/60);
+            }
+            if (this.plugin.currentSession && !this.plugin.currentSession.isBreak) {
+                const cs = this.plugin.currentSession;
+                const curDate = this.plugin.getDateString(cs.startTime);
+                if (curDate === date) catTotals[cs.category] = (catTotals[cs.category] || 0) + cs.getDuration();
+            }
+        });
+        const catEntries = Object.entries(catTotals).sort((a,b)=>b[1]-a[1]).slice(0,8);
+        if (catEntries.length) {
+            const wrap = this.periodCatRoot.createEl('div', { cls: 'catdist-wrap' });
+            wrap.createEl('div', { text: 'Category distribution (minutes)', cls: 'catdist-title' });
+            const max = Math.max(1, ...catEntries.map(e=>e[1]));
+            catEntries.forEach(([cat,val]) => {
+                const row = wrap.createEl('div', { cls: 'catdist-row' });
+                row.createEl('div', { cls: 'catdist-label', text: cat });
+                const bar = row.createEl('div', { cls: 'catdist-bar' });
+                const pct = Math.round((val/max)*100);
+                bar.setAttr('style', `width:${pct}%`);
+                bar.setText(`${val}m`);
+            });
+        }
+
+        // Minimal inline styles to make chart & details readable
+        const styleId = 'live-analytics-styles';
+        if (!document.getElementById(styleId)) {
+            const style = document.createElement('style');
+            style.id = styleId;
+            style.textContent = `
+            .live-analytics-controls{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+            .live-analytics-stats{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+            .live-chart-grid{display:flex;flex-direction:column;gap:6px}
+            .live-chart-row{display:grid;grid-template-columns: 140px 1fr 1fr;gap:8px;align-items:center}
+            .live-chart-cell{position:relative;height:22px}
+            .live-chart-label{font-weight:600;cursor:pointer}
+            .live-chart-label.is-selected{color: var(--interactive-accent)}
+            .live-bar{height:100%;background: var(--interactive-accent); color: var(--text-on-accent); text-align:right;padding-right:6px; line-height:22px; border-radius:4px}
+            .live-bar.cat-1{background: var(--color-yellow, #f2b01e)}
+            .live-analytics-details{margin-top:12px}
+            .details-title{font-weight:700;margin:6px 0}
+            .session-list{display:flex;flex-direction:column;gap:4px}
+            .session-item{border:1px solid var(--background-modifier-border);border-radius:6px;padding:6px}
+            .session-header{display:flex;gap:8px;align-items:center;font-weight:600}
+            .catdist-wrap{margin-top:10px}
+            .catdist-title{font-weight:700;margin-bottom:6px}
+            .catdist-row{display:flex;align-items:center;gap:8px;margin:2px 0}
+            .catdist-label{width:140px}
+            .catdist-bar{height:18px;background: var(--interactive-accent); color: var(--text-on-accent); text-align:right;padding-right:6px; line-height:18px; border-radius:4px}
+            .clickable{cursor:pointer; text-decoration: underline}
+            `;
+            document.head.appendChild(style);
+        }
+        this.renderDetailsForDate(this.selectedDate!);
+    }
+
+    private async exportCsv() {
+        try {
+            const dates = this.getDatesForPeriod();
+            const cats = (this.plugin.settings.liveAnalyticsCategories || []).slice(0,2);
+            const rows: string[] = [];
+            const header = ['date','study_minutes','break_minutes','total_minutes','pomodoros','words','created_notes','modified_notes', ...cats.map(c=>`cat_${c}_minutes`)];
+            rows.push(header.join(','));
+            for (const date of dates) {
+                const daily = this.plugin.analyticsService!.computeDaily(date);
+                this.augmentDaily(daily, date);
+                const perCat: Record<string, number> = {}; cats.forEach(c=>perCat[c]=0);
+                this.plugin.sessionsData.sessions.forEach(s => { if (!s.isBreak && s.date===date && cats.includes(s.category)) perCat[s.category]+=s.duration; });
+                const live = this.plugin.sessionsData.liveSession as any;
+                if (live && live.date===date && cats.includes(live.category) && !this.plugin.currentSession) perCat[live.category]+= Math.floor(((typeof live.durationSec==='number'? live.durationSec : (live.duration||0)*60))/60);
+                if (this.plugin.currentSession && !this.plugin.currentSession.isBreak && this.plugin.getDateString(this.plugin.currentSession.startTime)===date && cats.includes(this.plugin.currentSession.category)) perCat[this.plugin.currentSession.category]+= this.plugin.currentSession.getDuration();
+                const total = daily.totalStudyTime + daily.totalBreakTime;
+                const row = [date, String(daily.totalStudyTime), String(daily.totalBreakTime), String(total), String(daily.totalPomodoros), String(daily.totalWordCount), String(daily.createdNotes.length), String(daily.modifiedNotes.length), ...cats.map(c=> String(perCat[c]||0))];
+                rows.push(row.join(','));
+            }
+            const csv = rows.join('\n');
+            const pathSafeDate = this.anchorDate;
+            const file = `${this.plugin.settings.notesFolder}/live_analytics_${this.period}_${pathSafeDate}.csv`;
+            if (!(await this.plugin.app.vault.adapter.exists(this.plugin.settings.notesFolder))) await this.plugin.app.vault.createFolder(this.plugin.settings.notesFolder);
+            await this.plugin.app.vault.adapter.write(file, csv);
+            new Notice(`Exported CSV to ${file}`);
+        } catch (e) {
+            console.error('Export CSV failed', e);
+            new Notice('Export CSV failed');
+        }
+    }
+
+    private renderDetailsForDate(date: string) {
+        this.detailsRoot.empty();
+        this.detailsRoot.createEl('div', { cls: 'details-title', text: `Details for ${date}` });
+        const list = this.detailsRoot.createEl('div', { cls: 'session-list' });
+        const sessions = this.plugin.sessionsData.sessions.filter(s=> s.date === date);
+        const transient: any[] = [];
+        if (this.plugin.currentSession && !this.plugin.currentSession.isBreak && this.plugin.getDateString(this.plugin.currentSession.startTime)===date) {
+            const cs = this.plugin.currentSession;
+            transient.push({
+                category: cs.category,
+                startTime: cs.startTime,
+                duration: cs.getDuration(),
+                pomodoros: cs.pomodorosCompleted,
+                difficulty: cs.difficulty,
+                notes: cs.notes,
+                distractions: cs.distractions,
+                modifiedFiles: Array.from(cs.modifiedFiles),
+                createdFiles: Array.from(cs.createdFiles),
+                completedTasks: cs.completedTasks,
+                wordCount: cs.wordCount,
+                createdLinks: Array.from(cs.createdLinks),
+                isLive: true,
+            });
+        } else if (this.plugin.sessionsData.liveSession && !this.plugin.currentSession && this.plugin.sessionsData.liveSession.date === date) {
+            const ls: any = this.plugin.sessionsData.liveSession;
+            transient.push({
+                category: ls.category,
+                startTime: new Date(ls.startTime),
+                duration: Math.floor((typeof ls.durationSec==='number'? ls.durationSec : (ls.duration||0)*60)/60),
+                pomodoros: ls.pomodoros || 0,
+                difficulty: ls.difficulty || 1,
+                notes: ls.notes || '',
+                distractions: ls.distractions || [],
+                modifiedFiles: ls.modifiedFiles || [],
+                createdFiles: ls.createdFiles || [],
+                completedTasks: ls.completedTasks || [],
+                wordCount: ls.wordCount || 0,
+                createdLinks: ls.createdLinks || [],
+                isLive: true,
+            });
+        }
+        const all: any[] = sessions.concat(transient);
+        if (all.length === 0) {
+            list.createEl('div', { text: 'No sessions.' });
+            return;
+        }
+        const fileCounts = new Map<string, number>();
+        all.forEach(s => (s.modifiedFiles||[]).forEach((f:string)=> fileCounts.set(f, (fileCounts.get(f)||0)+1)));
+        const topFiles = Array.from(fileCounts.entries()).sort((a,b)=>b[1]-a[1]).slice(0,5).map(e=>e[0]);
+        if (topFiles.length) {
+            this.detailsRoot.createEl('div', { text: 'Top modified files:' });
+            const ul = this.detailsRoot.createEl('ul');
+            topFiles.forEach(f => {
+                const name = f.endsWith('.md') ? (f.split('/').pop() || f) : f;
+                const li = ul.createEl('li');
+                const a = li.createEl('a', { text: name, cls: 'clickable' });
+                a.onclick = () => {
+                    const tf = this.plugin.app.vault.getAbstractFileByPath(f);
+                    if (tf) (this.plugin.app as any).workspace.openLinkText(f, '', true);
+                };
+            });
+        }
+        all.sort((a,b)=> (new Date(a.startTime).getTime()) - (new Date(b.startTime).getTime()));
+        all.forEach(s => {
+            const item = list.createEl('div', { cls: 'session-item' });
+            const header = item.createEl('div', { cls: 'session-header' });
+            header.createEl('span', { text: s.category });
+            header.createEl('span', { text: new Date(s.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
+            header.createEl('span', { text: `${Math.floor(s.duration/60)}h ${s.duration%60}m` });
+            if (s.isLive) header.createEl('span', { text: 'LIVE', cls: 'mod-warning' });
+            const body = item.createEl('div');
+            const line1 = body.createEl('div');
+            line1.createEl('span', { text: `Pomodoros: ${s.pomodoros || 0} • Difficulty: ${s.difficulty || 1}/5 • Words: ${s.wordCount || 0}` });
+            const line2 = body.createEl('div');
+            const createdList = (s.createdFiles||[]).filter((f:string)=>f.endsWith('.md'));
+            const modifiedList = (s.modifiedFiles||[]).filter((f:string)=>f.endsWith('.md'));
+            const links = (s.createdLinks||[]).length;
+            line2.createEl('span', { text: `Created notes: ${createdList.length} • Modified notes: ${modifiedList.length} • Links: ${links}` });
+            const quick = body.createEl('div');
+            if (modifiedList.length) {
+                quick.createEl('span', { text: 'Open modified: ' });
+                modifiedList.slice(0,3).forEach((f:string, i:number) => {
+                    const a = quick.createEl('a', { text: (f.split('/').pop()||f), cls: 'clickable' });
+                    a.onclick = () => { const tf = this.plugin.app.vault.getAbstractFileByPath(f); if (tf) (this.plugin.app as any).workspace.openLinkText(f, '', true); };
+                    if (i<Math.min(2, modifiedList.length-1)) quick.createEl('span', { text: ' • '});
+                });
+            }
+            if (createdList.length) {
+                quick.createEl('span', { text: '  ' });
+                quick.createEl('span', { text: 'Open created: ' });
+                createdList.slice(0,3).forEach((f:string, i:number) => {
+                    const a = quick.createEl('a', { text: (f.split('/').pop()||f), cls: 'clickable' });
+                    a.onclick = () => { const tf = this.plugin.app.vault.getAbstractFileByPath(f); if (tf) (this.plugin.app as any).workspace.openLinkText(f, '', true); };
+                    if (i<Math.min(2, createdList.length-1)) quick.createEl('span', { text: ' • '});
+                });
+            }
+            const line3 = body.createEl('div');
+            line3.createEl('span', { text: `Distractions: ${(s.distractions||[]).length} • Tasks: ${(s.completedTasks||[]).length}` });
+        });
+        // Export day details
+        const btns = this.detailsRoot.createEl('div', { cls: 'details-actions' });
+        const exportCsvBtn = btns.createEl('button', { text: 'Export Day CSV' });
+        exportCsvBtn.onclick = () => this.exportDayCsv(date);
+        const exportJsonBtn = btns.createEl('button', { text: 'Export Day JSON' });
+        exportJsonBtn.onclick = () => this.exportDayJson(date);
+    }
+
+    private async exportDayCsv(date: string) {
+        try {
+            const sessions = this.plugin.sessionsData.sessions.filter(s=>s.date===date);
+            const rows = [['category','start_time','duration_min','pomodoros','difficulty','words','distractions','tasks','created_notes','modified_notes']];
+            const toRow = (s:any) => [s.category, new Date(s.startTime).toISOString(), String(s.duration), String(s.pomodoros||0), String(s.difficulty||1), String(s.wordCount||0), String((s.distractions||[]).length), String((s.completedTasks||[]).length), String((s.createdFiles||[]).filter((f:string)=>f.endsWith('.md')).length), String((s.modifiedFiles||[]).filter((f:string)=>f.endsWith('.md')).length)];
+            sessions.forEach(s=> rows.push(toRow(s)));
+            const live = this.plugin.sessionsData.liveSession as any;
+            if (live && live.date===date && !this.plugin.currentSession) {
+                rows.push([live.category, new Date(live.startTime).toISOString(), String(Math.floor((typeof live.durationSec==='number'? live.durationSec:(live.duration||0)*60)/60)), String(live.pomodoros||0), String(live.difficulty||1), String(live.wordCount||0), String((live.distractions||[]).length), String((live.completedTasks||[]).length), String((live.createdFiles||[]).filter((f:string)=>f.endsWith('.md')).length), String((live.modifiedFiles||[]).filter((f:string)=>f.endsWith('.md')).length)]);
+            }
+            const csv = rows.map(r=>r.join(',')).join('\n');
+            const file = `${this.plugin.settings.notesFolder}/day_${date}_details.csv`;
+            if (!(await this.plugin.app.vault.adapter.exists(this.plugin.settings.notesFolder))) await this.plugin.app.vault.createFolder(this.plugin.settings.notesFolder);
+            await this.plugin.app.vault.adapter.write(file, csv);
+            new Notice(`Exported ${file}`);
+        } catch (e) { console.error(e); new Notice('Export day CSV failed'); }
+    }
+    private async exportDayJson(date: string) {
+        try {
+            const data:any = { date, sessions: this.plugin.sessionsData.sessions.filter(s=>s.date===date) };
+            const live = this.plugin.sessionsData.liveSession as any;
+            if (live && live.date===date && !this.plugin.currentSession) data.liveSession = live;
+            const file = `${this.plugin.settings.notesFolder}/day_${date}_details.json`;
+            if (!(await this.plugin.app.vault.adapter.exists(this.plugin.settings.notesFolder))) await this.plugin.app.vault.createFolder(this.plugin.settings.notesFolder);
+            await this.plugin.app.vault.adapter.write(file, JSON.stringify(data, null, 2));
+            new Notice(`Exported ${file}`);
+        } catch (e) { console.error(e); new Notice('Export day JSON failed'); }
+    }
+}
+
+class LiveSessionResumeModal extends Modal {
+    plugin: StudyAnalyticsPlugin;
+    autoStart: boolean = false;
+    constructor(app: App, plugin: StudyAnalyticsPlugin) {
+        super(app);
+        this.plugin = plugin;
+    }
+    onOpen() {
+        const { contentEl } = this;
+        this.titleEl.setText('Resume previous session?');
+        const live = this.plugin.sessionsData.liveSession as any;
+        if (!live) { this.close(); return; }
+        const cat = live.category;
+        const mins = Math.floor(((typeof live.durationSec==='number'? live.durationSec : (live.duration||0)*60))/60);
+        contentEl.createEl('p', { text: `A previous session was found: ${cat} • ~${mins} minutes.` });
+        const checkboxDiv = contentEl.createEl('div');
+        const cb = checkboxDiv.createEl('input', { type: 'checkbox' });
+        checkboxDiv.createEl('label', { text: 'Start timer immediately after resuming' });
+        cb.onchange = () => { this.autoStart = cb.checked; };
+        const btns = contentEl.createEl('div', { cls: 'modal-button-container' });
+        const resumeBtn = btns.createEl('button', { text: 'Resume', cls: 'mod-cta' });
+        const laterBtn = btns.createEl('button', { text: 'Not now' });
+        resumeBtn.onclick = async () => {
+            await this.resumeFromSnapshot(this.autoStart);
+            this.close();
+        };
+        laterBtn.onclick = () => this.close();
+    }
+    async resumeFromSnapshot(startTimer: boolean) {
+        const live = this.plugin.sessionsData.liveSession as any;
+        if (!live) return;
+        const view = this.plugin.getStudyFlowView();
+        // Create new session with same category
+        this.plugin.startNewSession(live.category || 'Study');
+        const s = this.plugin.currentSession!;
+        // Reconstruct duration by setting startTime accordingly (no ongoing break)
+        const now = Date.now();
+        const sec = typeof live.durationSec==='number' ? live.durationSec : (live.duration||0)*60;
+        s.startTime = new Date(now - sec*1000);
+        s.totalBreakDuration = (live.breakDuration ? live.breakDuration*60000 : 0);
+        s.pomodorosCompleted = live.pomodoros || 0;
+        s.difficulty = live.difficulty || 1;
+        s.notes = live.notes || '';
+        s.isBreak = false;
+        // Restore sets
+        (live.modifiedFiles||[]).forEach((f:string)=> s.modifiedFiles.add(f));
+        (live.openedFiles||[]).forEach((f:string)=> s.openedFiles.add(f));
+        (live.createdFiles||[]).forEach((f:string)=> s.createdFiles.add(f));
+        (live.createdLinks||[]).forEach((f:string)=> s.createdLinks.add(f));
+        s.completedTasks = live.completedTasks || [];
+        s.distractions = live.distractions || [];
+        s.lineNotes = live.lineNotes || [];
+        s.reflections = live.reflections || [];
+        // Update UI
+        if (view) {
+            view.updateCategorySelect();
+            view.categorySelect.value = s.category;
+            view.notesArea.value = s.notes;
+            if (view.difficultySlider && this.plugin.settings.showDifficulty) {
+                view.difficultySlider.value = String(s.difficulty);
+            }
+            // Re-sync recurring countdown if in that mode
+            await view.refreshRecurringGoalCountdown();
+            view.updateTimerDisplay();
+            await view.updateDailyTime();
+            if (startTimer) {
+                view.startTimer();
+            }
+        }
+        // Remove snapshot
+        delete this.plugin.sessionsData.liveSession;
+        this.plugin.sessionsData.lastUpdated = new Date().toISOString();
+        await this.plugin.saveSessionsData();
+        new Notice('Session resumed from snapshot');
     }
 }

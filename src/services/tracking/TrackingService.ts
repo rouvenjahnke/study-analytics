@@ -41,7 +41,13 @@ export class TrackingService {
         p.currentSession?.updateWordCount(file.path, wordCount);
         const cache = p.app.metadataCache.getFileCache(file as TFile);
         if (cache && cache.links) p.currentSession?.updateLinkCount(file.path, cache.links.length);
+        // Persist live snapshot after significant change
+        p.scheduleAutosaveLiveSnapshot();
       });
+    }
+    // Also schedule a snapshot for non-MD modifies
+    if (!(file instanceof (p.app.vault.constructor as any).TFile) || (file as TFile).extension !== 'md') {
+      p.scheduleAutosaveLiveSnapshot();
     }
   }
 
@@ -52,6 +58,7 @@ export class TrackingService {
       if ((file as TFile).extension === 'md') {
         p.currentSession.trackCreatedFile(file.path);
         if (p.settings.autoSetCategoryByFolder) p.updateCategoryByFolder(file.path);
+        p.scheduleAutosaveLiveSnapshot();
       }
     }
   }
@@ -62,6 +69,7 @@ export class TrackingService {
     if (p.settings.focusPath && !file.path.startsWith(p.settings.focusPath)) return;
     p.currentSession.trackOpenedFile(file.path);
     if (p.settings.autoSetCategoryByFolder) p.updateCategoryByFolder(file.path);
+    p.scheduleAutosaveLiveSnapshot();
   }
 
   private debounce(key: string, fn: () => void, wait = 800) {
@@ -71,4 +79,3 @@ export class TrackingService {
     this.debounced.set(key, id);
   }
 }
-

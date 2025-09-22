@@ -87,7 +87,7 @@ export class AnalyticsService {
 
     const cur = new Date(start);
     while (cur <= sunday) {
-      const d = cur.toISOString().split('T')[0];
+      const d = this.plugin.getDateString(cur);
       const daily = this.computeDaily(d);
       weeklyStudyTime += daily.totalStudyTime;
       weeklyBreakTime += daily.totalBreakTime;
@@ -116,8 +116,8 @@ export class AnalyticsService {
 
     const avgDifficulty = allDifficulties.length>0 ? (allDifficulties.reduce((a,b)=>a+b)/allDifficulties.length).toFixed(1) : '0';
     return {
-      rangeStart: start.toISOString().split('T')[0],
-      rangeEnd: sunday.toISOString().split('T')[0],
+      rangeStart: this.plugin.getDateString(start),
+      rangeEnd: this.plugin.getDateString(sunday),
       dayReports,
       weeklyStudyTime, weeklyBreakTime, weeklyPomodoros, weeklyDistractions, weeklyTasks, weeklyWordCount,
       avgDifficulty,
@@ -126,4 +126,3 @@ export class AnalyticsService {
     };
   }
 }
-
